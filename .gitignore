@@ -1,0 +1,42 @@
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+.venv/
+.python-version
+uv.lock
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Local data and outputs
+data/**
+!data/
+!data/bronze/
+!data/bronze/.gitkeep
+!data/silver/
+!data/silver/.gitkeep
+!data/gold/
+!data/gold/.gitkeep
+outputs/
+reports/**
+!reports/
+!reports/.gitkeep
+
+# Docs build
+site/
+
+# OS/editor
+.DS_Store
+.idea/
+.vscode/

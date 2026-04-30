@@ -1,0 +1,36 @@
+project_slug = "log-iv"
+data_dir = "data"
+reports_dir = "reports"
+timezone_us = "America/New_York"
+timezone_jp = "Asia/Tokyo"
+
+[vendors.massive]
+enabled = true
+api_key_env = "MASSIVE_API_KEY"
+api_key_file_env = "MASSIVE_API_KEY_FILE"
+base_url = "https://api.massive.com"
+
+[vendors.jquants]
+enabled = true
+api_key_env = "JQUANTS_API_KEY"
+api_key_file_env = "JQUANTS_API_KEY_FILE"
+base_url = "https://api.jquants.com/v2"
+
+[vendors.fred]
+enabled = false
+api_key_env = "FRED_API_KEY"
+api_key_file_env = "FRED_API_KEY_FILE"
+base_url = "https://api.stlouisfed.org/fred"
+
+[universe.us_mvp]
+underlyings = ["SPY", "QQQ", "AAPL", "MSFT", "NVDA"]
+start_date = "2022-01-01"
+end_date = ""
+
+[universe.japan_ood]
+enabled = false
+underlyings = []
+
+[graph]
+similarity_edges_per_node = 2
+liquidity_epsilon = 1e-8

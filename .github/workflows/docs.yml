@@ -1,0 +1,81 @@
+name: Docs
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - README.md
+      - mkdocs.yml
+      - pyproject.toml
+      - justfile
+      - uv.lock
+      - docs/**
+      - .github/workflows/ci.yml
+      - .github/workflows/docs.yml
+  pull_request:
+    paths:
+      - README.md
+      - mkdocs.yml
+      - pyproject.toml
+      - justfile
+      - uv.lock
+      - docs/**
+      - .github/workflows/ci.yml
+      - .github/workflows/docs.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build MkDocs site
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+
+      - name: Set up Python
+        uses: actions/setup-python@v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          enable-cache: true
+
+      - name: Sync environment
+        run: uv sync --all-extras --dev
+
+      - name: Build documentation
+        run: uv run mkdocs build --strict --site-dir site
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v6.0.0
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v5.0.0
+        with:
+          path: site
+
+  deploy:
+    name: Deploy to GitHub Pages
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v5.0.0

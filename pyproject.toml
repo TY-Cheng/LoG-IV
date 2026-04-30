@@ -1,0 +1,87 @@
+[project]
+name = "log-iv"
+version = "0.1.0"
+description = "Exploration scaffold for liquidity-aware graph learning on irregular option surfaces."
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "httpx>=0.28.0",
+    "numpy>=2.1.0",
+    "pandas>=2.2.0",
+    "polars>=1.20.0",
+    "pyarrow>=18.0.0",
+    "pydantic>=2.10.0",
+    "python-dotenv>=1.0.1",
+    "scipy>=1.15.0",
+    "torch>=2.6,<3",
+    "torch-geometric>=2.6",
+    "tzdata>=2025.1",
+]
+
+[project.optional-dependencies]
+docs = ["mkdocs>=1.6.1", "mkdocs-material>=9.6.0"]
+ml = []
+
+[tool.uv]
+package = false
+
+[dependency-groups]
+dev = [
+    "ipykernel>=6.29.5",
+    "mypy>=1.14.0",
+    "pytest>=8.3.4",
+    "pytest-cov>=6.0.0",
+    "ruff>=0.9.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+
+[[tool.mypy.overrides]]
+module = ["pandas.*", "scipy.*", "torch_geometric.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["log_iv.encoder", "log_iv.gnn", "log_iv.regularizer", "log_iv.train"]
+disable_error_code = [
+    "assignment",
+    "index",
+    "no-any-return",
+    "no-untyped-call",
+    "no-untyped-def",
+    "operator",
+    "type-arg",
+]
+
+[[tool.mypy.overrides]]
+module = ["log_iv.synthetic"]
+disable_error_code = ["import-untyped", "type-arg"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q --cov=log_iv --cov-report=term-missing --cov-fail-under=90"
+
+[tool.coverage.run]
+branch = true
+source = ["log_iv"]
+omit = [
+    "src/log_iv/__main__.py",
+    "src/log_iv/cli.py",
+    "src/log_iv/data_fetch.py",
+    "src/log_iv/encoder.py",
+    "src/log_iv/gnn.py",
+    "src/log_iv/regularizer.py",
+    "src/log_iv/synthetic.py",
+    "src/log_iv/train.py",
+]
