@@ -120,7 +120,8 @@ and stronger baselines.
 The first headline task is **masked reconstruction**:
 
 - The target is IV at observed option contracts.
-- Masked input nodes remove IV, bid, and ask from model inputs.
+- Masked input nodes remove IV, bid, ask, volume, and open interest from model
+  inputs.
 - Target values remain available only to the loss and metrics.
 - Headline metrics are computed on masked nodes, not on all observed nodes.
 
@@ -130,23 +131,30 @@ clean next-day forecasting target.
 
 ## Baselines
 
-Baselines must be fit from training data only:
+P0 train-only baselines:
 
 - train global mean IV;
 - train mean IV by underlying;
 - train mean IV by moneyness-tenor bucket;
-- train-fitted moneyness-tenor kNN.
+- train-fitted moneyness-tenor kNN;
+- random uniform IV.
+
+P0 within-surface baselines may use evaluation-surface visible nodes after the
+mask is applied:
+
+- within-surface kNN;
+- within-surface RBF interpolation;
+- within-surface local linear interpolation;
+- raw SVI per-expiry fitting with timeout and failure accounting.
 
 Leave-one-out baselines may be written only as leakage-prone diagnostics. They
 must not be used as paper-facing benchmark comparisons.
 
-The current kNN baseline is a valid credibility floor, but it is not sufficient
-for a LoG paper. Before promotion to paper-candidate results, add stronger
-train-only baselines:
+The current train-only kNN baseline is a valid credibility floor, but it is not
+sufficient for a LoG paper. SSVI, constrained SVI, and the heavier ML/graph
+baseline family are P1 until `data_v1` passes:
 
-- within-surface kNN or RBF interpolation;
-- SVI or SSVI per-expiry fitting;
-- calendar-smoothed SVI or SSVI;
+- constrained SVI and SSVI calendar fitting;
 - graph Laplacian smoothing;
 - tabular LightGBM or XGBoost on geometry and liquidity features;
 - DeepSets or Set Transformer as no-edge neural set baselines;

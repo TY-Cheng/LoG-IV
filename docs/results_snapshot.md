@@ -1,11 +1,12 @@
 # Results Snapshot
 
-Current evidence state: **expanded data gate plus credible protocol smoke, not
-paper evidence**.
+Current evidence state: **expanded data gate plus a single-seed 10-epoch
+benchmark-stage run, not paper evidence**.
 
 No result below is a `paper_candidate`. The current runs are useful because they
 exercise real data, model controls, baseline summaries, and post-run diagnostics.
-They are still too short and under-trained for LoG claims.
+They are still too short, single-seed, and missing the full strong-baseline
+ladder required for LoG claims.
 
 ## Snapshot On 2026-05-01
 
@@ -51,9 +52,9 @@ Implemented, but not yet paper evidence:
 - Data expansion probes now cover U.S. options flat-file templates and J-Quants
   V2 options date loops.
 
-No new benchmark result is promoted here because the current local data do not
-meet the default acceptance gate: at least 1,000 usable U.S. surfaces after
-`min_nodes_per_surface=20` and at least 20 Japan option observation dates.
+This protocol update was implemented before the expanded local data gate passed.
+The current expanded-data status is recorded below and supersedes this older
+blocked state.
 
 ## Expansion Update On 2026-05-03
 
@@ -111,6 +112,46 @@ Interpretation:
 - A 1-epoch smoke does not beat the train-only moneyness-tenor kNN baseline.
   This is expected to remain diagnostic until a multi-seed, longer training
   run is completed.
+
+## Benchmark Stage1 On 2026-05-03
+
+Run family: `reports/runs/benchmark_stage1/`.
+
+This is the latest local benchmark result currently recorded in the repo. It
+uses the credible protocol path with `task=masked_reconstruction`,
+`split_mode=temporal`, `seed=1`, `epochs=10`, `d_model=64`, two encoder layers,
+two GNN layers where applicable, and `max_nodes_per_surface=250`.
+
+Temporal split manifest:
+
+- train ends on 2026-04-16;
+- validation covers 2026-04-17 through 2026-04-23;
+- test starts on 2026-04-24;
+- train/validation/test surfaces: 840 / 200 / 200;
+- train/validation/test rows: 209,768 / 49,906 / 49,805;
+- validation/test masked rows: 9,981 / 9,961.
+
+Headline table from `benchmark_summary.csv`:
+
+| Variant | Masked IV MAE | IV MAE | Train kNN MAE | Delta vs kNN | Price MAE | Cal Viol | Conv Viol | Label |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `encoder_mlp` | 0.1028 | 0.1270 | 0.1043 | -0.0016 | 0.0148 | 1,894 | 9,689 | `real_us_mvp` |
+| `gnn_no_liq` | 0.0546 | 0.0878 | 0.1043 | -0.0497 | 0.0099 | 3,967 | 15,869 | `real_us_mvp` |
+| `gnn_liq` | 0.0581 | 0.0799 | 0.1043 | -0.0463 | 0.0090 | 3,592 | 13,718 | `real_us_mvp` |
+| `gnn_decoded_calendar_convexity` | 0.0511 | 0.0865 | 0.1043 | -0.0533 | 0.0090 | 2,579 | 14,200 | `real_us_mvp` |
+
+Interpretation:
+
+- This is the first expanded-data run where graph variants beat the current
+  train-only moneyness-tenor kNN baseline on masked IV MAE.
+- The decoded calendar/convexity variant has the best masked IV MAE in this
+  run, but it does not solve the no-arbitrage story because convexity
+  violations remain high.
+- Liquidity edges improve normalized price error versus `gnn_no_liq`, but
+  `gnn_liq` is not the best masked-IV variant in this single-seed run.
+- The result remains `real_us_mvp`, not `paper_candidate`, because it is only
+  10 epochs and one seed, and it does not yet include SVI/SSVI, interpolation,
+  tabular ML, set-model, and standard-GNN baseline ladders.
 
 ## First Matrix
 

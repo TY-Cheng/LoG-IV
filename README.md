@@ -113,7 +113,7 @@ The credible benchmark entrypoint is:
 US_TICKERS=SPY,QQQ,IWM,DIA,AAPL,MSFT,NVDA,AMZN,GOOGL,GOOG,META,TSLA,AMD,NFLX,AVGO,JPM,BAC,XOM,CVX,UNH,JNJ,LLY,V,MA,COST,WMT,HD,PG,KO,PEP,DIS,ORCL,CRM,INTC,CSCO,IBM,GE,BA,F,T
 
 PYTHONPATH=src uv run python -m log_iv.cli data-expansion \
-  --market us --start 2026-03-18 --end 2026-04-30 --tickers "$US_TICKERS"
+  --market us --start 2026-02-02 --end 2026-04-30 --tickers "$US_TICKERS"
 
 PYTHONPATH=src uv run python -m log_iv.cli data-expansion \
   --market jp --start 2026-03-16 --end 2026-04-30 --max-jp-option-dates 35
@@ -124,10 +124,13 @@ PYTHONPATH=src uv run python -m log_iv.cli benchmark-protocol \
 ```
 
 By default it requires masked reconstruction, temporal splits, three seeds, and
-at least 1,000 usable U.S. surfaces. If the local data do not meet that gate, it
-writes `reports/runs/data_expansion_report.json` instead of promoting a run.
+at least 1,000 usable U.S. surfaces across 31 U.S. observation dates. If the
+local data do not meet that gate, it writes
+`reports/runs/data_expansion_report.json` instead of promoting a run.
 The data-expansion report records expanded silver paths, deduplication counts,
-distinct dates, and IV-usable surface gates.
+distinct dates, ticker universe, data-stage label, and IV-usable surface gates.
+The current short-window expanded U.S. table is `data_v0`; the next target is
+`data_v1`, using the same 40 tickers over 2026-02-02 through 2026-04-30.
 Current Massive day aggregates provide price rows but no vendor IV, so the U.S.
 adapter infers IV from same-date U.S. stock closes with a zero-rate,
 zero-dividend Black-forward inversion. Treat these as inferred engineering

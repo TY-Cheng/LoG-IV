@@ -181,6 +181,36 @@ It covers 40 U.S. underlyings from 2026-03-18 to 2026-04-30 and records:
 - `iv_source=option_mid_price_with_underlying_daily_close`;
 - `iv_method=black_forward_bisection_zero_rate_zero_dividend`.
 
+This table is frozen as `data_v0`. It is for pipeline, protocol, and baseline
+development, not final paper tables.
+
+## Data Version Ladder
+
+The data-first benchmark ladder is:
+
+| Version | Purpose | U.S. gate | Date policy | Ticker policy |
+| --- | --- | --- | --- | --- |
+| `data_v0` | Pipeline/protocol/baseline development | 1,000+ usable surfaces and 31+ usable dates | Current short window | Current 40-ticker universe |
+| `data_v1` | First credible Protocol A run | 2,400+ usable surfaces and 60+ usable dates | Extend to 2026-02-02 through 2026-04-30 | Same 40 tickers |
+| `data_v2` | Paper-candidate table | 8,000+ usable surfaces and 126+ usable dates | Six to twelve months before the cutoff | Stable ticker universe before model selection |
+
+The implementation records `data_stage`, `date_range`, `tickers`,
+`ticker_count`, row counts, deduplication counts, IV-usable rows, usable
+surfaces, and surface-size min/p50/max in each expanded silver manifest.
+
+Use the same 40-ticker universe before expanding to a larger cross-section:
+
+```bash
+US_TICKERS="AAPL,AMD,AMZN,AVGO,BA,BAC,COST,CRM,CSCO,CVX,DIA,DIS,F,GE,GOOG,GOOGL,HD,IBM,INTC,IWM,JNJ,JPM,KO,LLY,MA,META,MSFT,NFLX,NVDA,ORCL,PEP,PG,QQQ,SPY,T,TSLA,UNH,V,WMT,XOM"
+
+PYTHONPATH=src uv run python -m log_iv.cli data-expansion \
+  --market us --start 2026-02-02 --end 2026-04-30 --tickers "$US_TICKERS"
+```
+
+Run through the repo environment contract so `UV_PROJECT_ENVIRONMENT` points to
+`${HOME}/.venvs/log-iv`; do not create a repo-local `.venv` for benchmark data
+work.
+
 The current expanded Japan table is:
 
 ```text
