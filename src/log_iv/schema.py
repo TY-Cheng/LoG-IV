@@ -13,7 +13,7 @@ OptionType = Literal["C", "P"]
 class OptionQuote(BaseModel):
     """Canonical option-token observation used before vendor-specific adapters exist."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="ignore")
 
     market: str = Field(min_length=2)
     underlying: str = Field(min_length=1)

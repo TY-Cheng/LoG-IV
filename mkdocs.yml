@@ -65,6 +65,7 @@ nav:
   - Paper Plan: paper_plan.md
   - Data: data.md
   - Benchmark Protocol: benchmark_protocol.md
+  - Synthetic Benchmark: synthetic_benchmark.md
   - Graph: graph.md
   - Audit Prompts:
       - Development Audit: audit/development_audit_prompt.md

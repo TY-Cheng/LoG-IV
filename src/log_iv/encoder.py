@@ -268,19 +268,23 @@ def extract_features_from_quotes(
         cp = 1.0 if q.option_type == "C" else 0.0
         geom_list.append([lm, ty, cp])
 
-        # Price: mid IV, spread (normalized), bid-ask ratio, target visibility flag.
-        iv = q.implied_vol if q.implied_vol is not None else 0.0
-        spread = q.spread if q.spread is not None else 0.0
-        mid = q.mid if q.mid is not None else 0.0
-        spread_norm = spread / (mid + 1e-6) if mid > 0 else 0.0
-        price_list.append([iv, spread_norm, min(spread_norm, 1.0), 1.0 if observed else 0.0])
+        if observed:
+            # Price: mid IV, spread (normalized), bid-ask ratio, target visibility flag.
+            iv = q.implied_vol if q.implied_vol is not None else 0.0
+            spread = q.spread if q.spread is not None else 0.0
+            mid = q.mid if q.mid is not None else 0.0
+            spread_norm = spread / (mid + 1e-6) if mid > 0 else 0.0
+            price_list.append([iv, spread_norm, min(spread_norm, 1.0), 1.0])
 
-        # Liquidity: volume, OI, spread_pct, liquidity_score
-        vol_log = math.log1p(q.volume)
-        oi_log = math.log1p(q.open_interest)
-        spread_ref = spread / (mid + 1e-6) if mid > 0 else 0.0
-        liq_score = vol_log + oi_log - math.log1p(spread_ref + 1e-6)
-        liq_list.append([vol_log, oi_log, spread_ref, liq_score])
+            # Liquidity: volume, OI, spread_pct, liquidity_score
+            vol_log = math.log1p(q.volume)
+            oi_log = math.log1p(q.open_interest)
+            spread_ref = spread / (mid + 1e-6) if mid > 0 else 0.0
+            liq_score = vol_log + oi_log - math.log1p(spread_ref + 1e-6)
+            liq_list.append([vol_log, oi_log, spread_ref, liq_score])
+        else:
+            price_list.append([0.0, 0.0, 0.0, 0.0])
+            liq_list.append([0.0, 0.0, 0.0, 0.0])
 
     device = device or torch.device("cpu")
     geom_t = torch.tensor(geom_list, dtype=torch.float32, device=device)

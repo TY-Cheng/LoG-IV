@@ -18,8 +18,8 @@ The default protocol uses:
 - `mask_regime=stratified`;
 - `target_space=iv`;
 - `seeds=1,2,3`;
-- `min_us_surfaces=1000`;
-- `min_us_dates=31`;
+- `min_us_surfaces=2400`;
+- `min_us_dates=60`;
 - `min_jp_dates=20`.
 
 Use smaller `--max-us-surfaces`, `--max-jp-surfaces`, and
@@ -32,7 +32,7 @@ The benchmark may run only when the data gate passes:
 
 | Market | Gate | Current status |
 | --- | --- | --- |
-| U.S. | At least 1,000 usable `(underlying, observation_date)` surfaces after `min_nodes_per_surface=20` | Pass: 1,240 usable surfaces in the current expanded silver table. |
+| U.S. | At least 2,400 usable `(underlying, observation_date)` surfaces after `min_nodes_per_surface=20` | Pass: 2,480 usable surfaces in the current expanded silver table. |
 | Japan | At least 20 usable option observation dates for OOD probing | Pass: 31 usable dates in the current expanded silver table. |
 
 If the gate fails, the CLI writes a data-expansion report and exits before
@@ -167,6 +167,32 @@ Avoid full Cartesian-product expansion.
 Price and no-arbitrage outputs are diagnostics first, not separate target
 spaces. OOD degradation ratios should use normalized errors rather than raw MAE
 alone.
+
+## Paper-Facing Scorecard
+
+Headline tables should remain compact:
+
+- masked IV MAE and RMSE;
+- masked p90 absolute error;
+- liquidity-bucket masked MAE;
+- delta versus the strongest credible within-surface baseline.
+
+Supporting scorecards should report:
+
+- normalized decoded-price error and, where bid/ask are available, bid-ask hit
+  rate;
+- arbitrage-fit frontier summaries: held-out quote error versus decoded
+  calendar, butterfly, and vertical-spread violation severity;
+- risk-neutral-density roughness diagnostics only for synthetic or
+  European-style index-option subsets where the Europeanized assumptions are
+  defensible;
+- graph-shift degradation normalized against a naive train-only baseline, not a
+  raw OOD/IID MAE ratio.
+
+For U.S. single-name and ETF options, decoded no-arbitrage outputs are
+Europeanized surface-geometry diagnostics. Strict static-arbitrage claims are
+reserved for synthetic data or European-style index-option subsets with explicit
+rate, dividend, and forward assumptions.
 
 ## Promotion Rule
 

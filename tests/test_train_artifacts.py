@@ -10,6 +10,7 @@ import pytest
 import torch
 
 from log_iv.cli import build_parser
+from log_iv.encoder import extract_features_from_quotes
 from log_iv.schema import OptionQuote
 from log_iv.train import (
     OptionTokenGNN,
@@ -194,6 +195,84 @@ def test_masked_reconstruction_removes_target_values_from_inputs() -> None:
     assert masked_surface.input_quotes[masked_index].open_interest == 0
 
 
+def test_masked_feature_extractor_blocks_quote_derived_side_information() -> None:
+    quote = _quote(
+        strike=105.0,
+        expiry=date(2026, 2, 20),
+        iv=0.99,
+        bid=9.0,
+        ask=12.0,
+    )
+
+    _, masked_price, masked_liq = extract_features_from_quotes(
+        [quote],
+        torch.device("cpu"),
+        target_observed=[False],
+    )
+    _, visible_price, visible_liq = extract_features_from_quotes(
+        [quote],
+        torch.device("cpu"),
+        target_observed=[True],
+    )
+
+    assert torch.equal(masked_price, torch.zeros_like(masked_price))
+    assert torch.equal(masked_liq, torch.zeros_like(masked_liq))
+    assert visible_price[0, 0].item() == pytest.approx(0.99)
+    assert visible_liq.abs().sum().item() > 0.0
+
+    perturbed = quote.model_copy(update={"bid": 1.0, "ask": 20.0, "volume": 9999})
+    _, perturbed_visible_price, perturbed_visible_liq = extract_features_from_quotes(
+        [perturbed],
+        torch.device("cpu"),
+        target_observed=[True],
+    )
+    assert not torch.equal(visible_price, perturbed_visible_price)
+    assert not torch.equal(visible_liq, perturbed_visible_liq)
+
+
+def test_masked_query_quote_perturbation_does_not_change_predictions() -> None:
+    from log_iv.train import SurfaceData
+
+    model = OptionTokenGNN(
+        TrainingConfig(
+            d_model=16,
+            n_encoder_layers=1,
+            n_gnn_layers=0,
+            dropout=0.0,
+            task_mode="masked_reconstruction",
+            no_arb_weight=0.0,
+        )
+    )
+    model.eval()
+    surface = _surface(1)
+    clean_masked = surface[0]
+    perturbed_masked = surface[0].model_copy(
+        update={"bid": 0.01, "ask": 999.0, "volume": 1_000_000, "open_interest": 1_000_000}
+    )
+
+    with torch.no_grad():
+        left = model.encode_graph(
+            SurfaceData(
+                surface_id="unit",
+                target_quotes=surface,
+                input_quotes=[clean_masked, *surface[1:]],
+                target_mask=(True, False, False),
+            ),
+            torch.device("cpu"),
+        )
+        right = model.encode_graph(
+            SurfaceData(
+                surface_id="unit",
+                target_quotes=surface,
+                input_quotes=[perturbed_masked, *surface[1:]],
+                target_mask=(True, False, False),
+            ),
+            torch.device("cpu"),
+        )
+
+    assert torch.allclose(left["iv_pred"], right["iv_pred"], atol=1e-7)
+
+
 def test_masked_metrics_use_masked_nodes_for_headline() -> None:
     frame = pd.DataFrame(
         {
@@ -339,6 +418,39 @@ def test_decoded_regularizer_does_not_call_embedding_proxy_paths() -> None:
     assert losses["no_arb"].item() >= 0.0
 
 
+def test_heteroscedastic_loss_is_finite_on_masked_nodes() -> None:
+    model = OptionTokenGNN(
+        TrainingConfig(
+            d_model=16,
+            n_encoder_layers=1,
+            n_gnn_layers=0,
+            task_mode="masked_reconstruction",
+            heteroscedastic_weight=1.0,
+            reliability_gate_weight=1.0,
+            no_arb_weight=0.0,
+        )
+    )
+    surface = _surface(1)
+    masked = surface[0].model_copy(update={"implied_vol": None, "bid": None, "ask": None})
+    from log_iv.train import SurfaceData
+
+    outputs = [
+        model.encode_graph(
+            SurfaceData(
+                surface_id="unit",
+                target_quotes=surface,
+                input_quotes=[masked, *surface[1:]],
+                target_mask=(True, False, False),
+            ),
+            torch.device("cpu"),
+        )
+    ]
+    losses = compute_losses(model, outputs, model.config)
+
+    assert torch.isfinite(losses["heteroscedastic"])
+    assert torch.isfinite(losses["total"])
+
+
 def test_zero_target_greeks_loss_is_disabled_by_default() -> None:
     model = OptionTokenGNN(
         TrainingConfig(d_model=16, n_encoder_layers=1, n_gnn_layers=0, no_arb_weight=0.0)
@@ -390,6 +502,7 @@ def test_diagnostics_detect_price_and_no_arb_violations() -> None:
     assert price["count"] == 6
     assert no_arb["pred_iv"]["calendar"]["violations"] >= 1
     assert no_arb["pred_iv"]["butterfly_convexity"]["violations"] >= 1
+    assert no_arb["pred_iv"]["vertical_spread"]["pairs"] >= 1
     assert no_arb["pred_iv"]["put_call_parity"]["pairs"] >= 1
 
 
@@ -426,6 +539,7 @@ def test_no_arb_diagnostics_sample_complete_surfaces() -> None:
     assert diagnostics["metadata"]["surface_count"] == 1
     assert diagnostics["metadata"]["row_count"] == 3
     assert diagnostics["pred_iv"]["butterfly_convexity"]["triples"] == 1
+    assert diagnostics["pred_iv"]["vertical_spread"]["pairs"] == 2
 
 
 def test_cli_exposes_matrix_and_requires_ood_data() -> None:

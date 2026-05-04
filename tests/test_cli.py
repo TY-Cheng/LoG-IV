@@ -88,6 +88,12 @@ def test_benchmark_protocol_exposes_postprocess_controls() -> None:
             "val,test",
             "--no-arb-max-surfaces-per-split",
             "25",
+            "--variant-suite",
+            "lagos_v2",
+            "--heteroscedastic-weight",
+            "0.7",
+            "--reliability-gate-weight",
+            "0.5",
             "--quiet-postprocess",
         ]
     )
@@ -99,6 +105,9 @@ def test_benchmark_protocol_exposes_postprocess_controls() -> None:
     assert args.no_arb_diagnostics_mode == "sampled_surface"
     assert args.no_arb_eval_splits == "val,test"
     assert args.no_arb_max_surfaces_per_split == 25
+    assert args.variant_suite == "lagos_v2"
+    assert args.heteroscedastic_weight == pytest.approx(0.7)
+    assert args.reliability_gate_weight == pytest.approx(0.5)
     assert args.quiet_postprocess
 
 

@@ -16,6 +16,9 @@ hide:
 - [Benchmark Protocol](benchmark_protocol.md): fixed splits, masked
   reconstruction, train-only baselines, leakage controls, regularizers, seeds,
   and acceptance rules.
+- [Synthetic Benchmark](synthetic_benchmark.md): public Synthetic-LoG-IV
+  generator contract, oracle fields, stable hashing, and clean-surface
+  diagnostics.
 - [Graph](graph.md): option-token nodes, edge families, liquidity weights,
   masking semantics, and decoded-price no-arbitrage hooks.
 - [Development Audit Prompt](audit/development_audit_prompt.md): code and data
@@ -33,6 +36,8 @@ hide:
 3. Read [Data](data.md) before changing ingestion, IV inversion, or OOD scope.
 4. Read [Benchmark Protocol](benchmark_protocol.md) before changing train/test
    splits, baseline definitions, or paper-facing metrics.
-5. Read [Graph](graph.md) before changing node features, edge construction, or
+5. Read [Synthetic Benchmark](synthetic_benchmark.md) before changing public
+   synthetic fixtures or oracle diagnostics.
+6. Read [Graph](graph.md) before changing node features, edge construction, or
    no-arbitrage hooks.
-6. Use the audit prompts before implementation review or manuscript review.
+7. Use the audit prompts before implementation review or manuscript review.

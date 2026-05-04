@@ -2,7 +2,8 @@
 
 ## Working Title
 
-**Liquidity-Aware Graph Neural Operators for Irregular Option Surfaces**
+**LoG-IV: A Leakage-Safe Benchmark and Heteroscedastic Graph Operator for
+Liquidity-Marked Option Surfaces**
 
 ## Core Question
 
@@ -10,15 +11,17 @@ Real option chains are irregular point clouds, not fixed images. Maturity grids
 are uneven, strike grids differ by expiry, and quote quality depends on bid-ask
 spread, volume, open interest, and market-specific contract conventions.
 
-This project asks whether graph or token operators that preserve option-surface
-geometry and liquidity state can improve masked option-surface reconstruction
-against credible train-only interpolation baselines.
+This project asks whether reliability-conditioned graph or token operators can
+improve leakage-safe masked option-surface reconstruction under market-realistic
+missingness and graph-domain shift. Liquidity marks are treated as noisy
+projections of quote reliability, not merely as extra node features.
 
 ## Current Paper Scope
 
-The first paper should stay centered on a U.S. end-of-day option-chain benchmark.
-Japan is useful as an OOD probe after its data gate passes, but the first claim
-does not depend on Japan transfer.
+The first paper should stay centered on a graph/geometric ML benchmark for
+irregular liquidity-marked option-surface graphs. Japan is useful as an OOD
+graph-domain probe after its data gate passes, but the first claim does not
+depend on Japan transfer.
 
 In scope:
 
@@ -28,6 +31,7 @@ In scope:
 - Fixed temporal, ticker-holdout, and temporal-ticker split protocols.
 - Train-only non-neural baselines, especially moneyness-tenor kNN.
 - Decoded-price diagnostics and decoded-price calendar/convexity regularizers.
+- Synthetic-LoG-IV as a public reproducibility scaffold with oracle diagnostics.
 - Japan option data as OOD coverage and domain-shift evidence, not as a required
   positive transfer result.
 
@@ -93,16 +97,16 @@ Sources:
 
 The expanded data gate is much stronger than the initial MVP:
 
-- U.S. expanded silver data: 1,516,612 rows, 31 observation dates, 40
-  underlyings, 1,240 surfaces, and 1,240 surfaces with at least 20 nodes.
+- U.S. expanded silver data: 2,979,716 rows, 62 observation dates, 40
+  underlyings, 2,480 surfaces, and 2,480 surfaces with at least 20 nodes.
 - Japan expanded silver data: 531,280 rows, 31 observation dates, 249
   underlying or surface keys, 6,991 surfaces, and 6,179 surfaces with at least
   20 nodes.
 
 This is enough for a first LoG masked-reconstruction benchmark, but not enough
-for strong temporal generalization, regime robustness, or cross-market transfer
-claims. The main limitation is time coverage: 31 observation dates is a credible
-first panel, not a market-cycle study.
+for market-cycle temporal generalization claims. The main limitation is still
+time coverage: 62 U.S. observation dates are enough for Protocol A, not a
+regime study.
 
 The current `benchmark_stage1` run is promising but still diagnostic:
 
@@ -168,12 +172,21 @@ surface-fitting baseline on masked IV MAE or normalized decoded-price MAE.
 
 - Liquidity-aware message passing should avoid over-propagating stale, wide, or
   low-volume quotes.
+- Heteroscedastic reliability modeling should improve low-liquidity and
+  liquidity-correlated masks more than random masks.
 - Graph operators should handle irregular strike and tenor grids more naturally
   than fixed-grid image models.
 - Decoded-price regularization should reduce financially implausible surfaces
   without relying on embedding-distance proxies.
 
 These hypotheses become paper claims only if they survive the benchmark gate.
+
+The v2 model ladder is implemented as a registry rather than a default run
+matrix. `lagos_v2` variants separate no-liquidity, liquidity-feature-only,
+current scalar liquidity gate, heteroscedastic-loss-only, reliability-gated
+decoder, and full heteroscedastic configurations. The full research claim still
+requires paper-candidate A1/A2 runs; the registry only makes the ablations
+auditable.
 
 ## Metrics
 
@@ -189,6 +202,9 @@ Supporting diagnostics:
 - normalized decoded-price error;
 - calendar and strike-convexity violation counts on true-IV and predicted-IV
   decoded prices;
+- vertical-spread diagnostics on synthetic and Europeanized subsets;
+- arbitrage-fit frontier summaries;
+- graph-shift degradation normalized against naive train-only baselines;
 - OOD degradation from U.S. to Japan or held-out tickers;
 - sensitivity to seed and training length.
 
@@ -226,9 +242,9 @@ Mitigations:
 
 The strongest paper positioning is:
 
-> We introduce a leakage-controlled masked-reconstruction benchmark for
-> irregular option-surface graphs, and evaluate liquidity-aware graph neural
-> operators against train-only interpolation, surface-fitting, tabular, set, and
+> We introduce LoG-IV, a leakage-safe benchmark for irregular liquidity-marked
+> option-surface graphs, and evaluate reliability-conditioned graph operators
+> against train-only interpolation, surface-fitting, tabular, set, and standard
 > graph baselines on real U.S. options, with Japan as an explicit graph-domain
 > shift probe.
 

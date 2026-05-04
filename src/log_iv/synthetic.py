@@ -16,7 +16,8 @@ Output format matches the research plan specification:
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+import json
+from dataclasses import asdict, dataclass
 from datetime import date, timedelta
 from typing import TYPE_CHECKING, NamedTuple, cast
 
@@ -177,6 +178,12 @@ class SyntheticQuote(NamedTuple):
     vega: float
     spread_pct: float
     liquidity_score: float
+    oracle_clean_iv: float
+    oracle_clean_price: float
+    oracle_latent_log_precision: float
+    oracle_noise_std: float
+    oracle_surface_family: str
+    oracle_event_bump_flag: bool
 
 
 @dataclass
@@ -214,6 +221,19 @@ class SyntheticSurfaceConfig:
     missing_wing_prob: float = 0.05  # prob of missing deep OTM quotes
     stale_quote_prob: float = 0.02
     stale_tenor_shift_days: int = 1
+
+    # Temporal / public benchmark reproducibility
+    surface_ar1_phi: float = 0.85
+    liquidity_ar1_phi: float = 0.90
+    surface_innovation_scale: float = 0.002
+    liquidity_innovation_scale: float = 0.08
+    event_bump_probability: float = 0.0
+    event_bump_amplitude: float = 0.0005  # total-variance bump
+    event_bump_width_moneyness: float = 0.08
+    event_bump_width_log_tenor: float = 0.35
+    event_bump_center_moneyness: float | None = None
+    event_bump_center_tenor_years: float | None = None
+    synthetic_version: str = "synthetic-log-iv-v0"
 
     # Seed
     random_seed: int = 42
@@ -267,6 +287,17 @@ def generate_synthetic_surface(
 
     # Implied volatility surface
     iv_surface = surface.implied_vol_surface(k_grid, tenor_years_grid)
+    event_bump_flag = bool(rng.random() < cfg.event_bump_probability)
+    bump_center_k = (
+        cfg.event_bump_center_moneyness
+        if cfg.event_bump_center_moneyness is not None
+        else float(rng.uniform(-0.15, 0.15))
+    )
+    bump_center_tau = (
+        cfg.event_bump_center_tenor_years
+        if cfg.event_bump_center_tenor_years is not None
+        else float(rng.choice(tenor_years_grid))
+    )
 
     quotes: list[SyntheticQuote] = []
 
@@ -278,6 +309,14 @@ def generate_synthetic_surface(
 
         for j, (k_val, K) in enumerate(zip(k_grid, strikes, strict=False)):
             iv_clean = iv_surface[i, j]
+            if event_bump_flag:
+                total_variance = iv_clean * iv_clean * tau
+                bump = cfg.event_bump_amplitude * np.exp(
+                    -((k_val - bump_center_k) ** 2) / (2.0 * cfg.event_bump_width_moneyness**2)
+                    - ((np.log(max(tau, 1e-8)) - np.log(max(bump_center_tau, 1e-8))) ** 2)
+                    / (2.0 * cfg.event_bump_width_log_tenor**2)
+                )
+                iv_clean = float(np.sqrt(max(total_variance + bump, 1e-12) / max(tau, 1e-8)))
 
             # Generate liquidity marks
             moneyness_abs = abs(k_val)
@@ -309,12 +348,14 @@ def generate_synthetic_surface(
             noise_scale = cfg.vol_noise_scale * (
                 1.0 + cfg.vol_noise_liquidity_corr * (1.0 - liquidity_normalized)
             )
+            latent_log_precision = -2.0 * np.log(max(noise_scale, 1e-12))
             iv_noisy = iv_clean + rng.normal(0.0, noise_scale)
             iv_noisy = max(iv_noisy, 1e-6)
 
             # Black-Scholes price for midpoint
             option_types = ["C", "P"]
             for opt_type in option_types:
+                clean_price = _bs_price(F, K, tau, cfg.risk_free_rate, iv_clean, opt_type)
                 price = _bs_price(F, K, tau, cfg.risk_free_rate, iv_noisy, opt_type)
                 half_spread = price * spread_pct / 2.0
                 bid = max(price - half_spread, 0.01)
@@ -346,6 +387,12 @@ def generate_synthetic_surface(
                     vega=round(vega, 6),
                     spread_pct=round(spread_pct, 6),
                     liquidity_score=round(liquidity_score, 6),
+                    oracle_clean_iv=round(iv_clean, 8),
+                    oracle_clean_price=round(clean_price, 8),
+                    oracle_latent_log_precision=round(float(latent_log_precision), 8),
+                    oracle_noise_std=round(float(noise_scale), 8),
+                    oracle_surface_family="ssvi_ar1_bump" if event_bump_flag else "ssvi_ar1",
+                    oracle_event_bump_flag=event_bump_flag,
                 )
                 quotes.append(quote)
 
@@ -372,38 +419,312 @@ def generate_synthetic_surface_dataset(
     underlyings = [f"SYNTH_{i}" for i in range(n_underlyings)]
 
     dataset: dict[str, list[SyntheticQuote]] = {}
+    chronological_dates = sorted(observation_dates)
     for ul in underlyings:
+        eta = float(np.clip(cfg.eta + rng.normal(0, 0.005), 0.005, 0.25))
+        lam = float(np.clip(cfg.lam + rng.uniform(-0.1, 0.1), 0.0, 1.0))
+        rho_surface = float(np.clip(cfg.rho_surface + rng.uniform(-0.1, 0.1), -0.95, 0.20))
+        eta_surface = float(np.clip(cfg.eta_surface + rng.uniform(-0.1, 0.1), 0.2, 5.0))
+        spread_pct = float(max(cfg.bid_ask_spread_pct * rng.lognormal(0.0, 0.1), 1e-5))
+        volume_base = int(max(1, cfg.volume_base * rng.lognormal(0.0, 0.15)))
+        oi_base = int(max(1, cfg.oi_base * rng.lognormal(0.0, 0.15)))
         ul_cfg = SyntheticSurfaceConfig(
             n_maturities=cfg.n_maturities,
             n_strikes=cfg.n_strikes,
             min_tenor_days=cfg.min_tenor_days,
             max_tenor_days=cfg.max_tenor_days,
             moneyness_range=cfg.moneyness_range,
-            eta=cfg.eta + rng.normal(0, 0.005),
-            lam=cfg.lam + rng.uniform(-0.1, 0.1),
-            rho_surface=cfg.rho_surface + rng.uniform(-0.1, 0.1),
-            eta_surface=cfg.eta_surface + rng.uniform(-0.1, 0.1),
+            eta=eta,
+            lam=lam,
+            rho_surface=rho_surface,
+            eta_surface=eta_surface,
             spot=cfg.spot * rng.lognormal(0, 0.1),
             risk_free_rate=cfg.risk_free_rate,
             dividend_yield=cfg.dividend_yield,
-            bid_ask_spread_pct=cfg.bid_ask_spread_pct,
+            bid_ask_spread_pct=spread_pct,
             vol_noise_scale=cfg.vol_noise_scale,
             vol_noise_liquidity_corr=cfg.vol_noise_liquidity_corr,
-            volume_base=cfg.volume_base,
+            volume_base=volume_base,
             volume_range=cfg.volume_range,
-            oi_base=cfg.oi_base,
+            oi_base=oi_base,
             oi_range=cfg.oi_range,
             missing_wing_prob=cfg.missing_wing_prob,
             stale_quote_prob=cfg.stale_quote_prob,
+            stale_tenor_shift_days=cfg.stale_tenor_shift_days,
+            surface_ar1_phi=cfg.surface_ar1_phi,
+            liquidity_ar1_phi=cfg.liquidity_ar1_phi,
+            surface_innovation_scale=cfg.surface_innovation_scale,
+            liquidity_innovation_scale=cfg.liquidity_innovation_scale,
+            event_bump_probability=cfg.event_bump_probability,
+            event_bump_amplitude=cfg.event_bump_amplitude,
+            event_bump_width_moneyness=cfg.event_bump_width_moneyness,
+            event_bump_width_log_tenor=cfg.event_bump_width_log_tenor,
+            synthetic_version=cfg.synthetic_version,
             market=cfg.market,
             underlying=ul,
             random_seed=cfg.random_seed + _stable_underlying_offset(ul),
         )
-        for obs_date in observation_dates:
+        for date_index, obs_date in enumerate(chronological_dates):
+            if date_index > 0:
+                phi = cfg.surface_ar1_phi
+                eta = _ar1_update(eta, cfg.eta, phi, cfg.surface_innovation_scale, rng, 0.005, 0.25)
+                lam = _ar1_update(lam, cfg.lam, phi, cfg.surface_innovation_scale, rng, 0.0, 1.0)
+                rho_surface = _ar1_update(
+                    rho_surface,
+                    cfg.rho_surface,
+                    phi,
+                    cfg.surface_innovation_scale * 4.0,
+                    rng,
+                    -0.95,
+                    0.20,
+                )
+                eta_surface = _ar1_update(
+                    eta_surface,
+                    cfg.eta_surface,
+                    phi,
+                    cfg.surface_innovation_scale * 10.0,
+                    rng,
+                    0.2,
+                    5.0,
+                )
+                liq_phi = cfg.liquidity_ar1_phi
+                spread_pct = _ar1_update(
+                    spread_pct,
+                    cfg.bid_ask_spread_pct,
+                    liq_phi,
+                    cfg.liquidity_innovation_scale * cfg.bid_ask_spread_pct,
+                    rng,
+                    1e-5,
+                    0.5,
+                )
+                volume_base = int(
+                    _ar1_update(
+                        float(volume_base),
+                        float(cfg.volume_base),
+                        liq_phi,
+                        cfg.liquidity_innovation_scale * max(cfg.volume_base, 1),
+                        rng,
+                        1.0,
+                        float(cfg.volume_range[1]),
+                    )
+                )
+                oi_base = int(
+                    _ar1_update(
+                        float(oi_base),
+                        float(cfg.oi_base),
+                        liq_phi,
+                        cfg.liquidity_innovation_scale * max(cfg.oi_base, 1),
+                        rng,
+                        1.0,
+                        float(cfg.oi_range[1]),
+                    )
+                )
+            ul_cfg = dataclass_replace(
+                ul_cfg,
+                eta=eta,
+                lam=lam,
+                rho_surface=rho_surface,
+                eta_surface=eta_surface,
+                bid_ask_spread_pct=spread_pct,
+                volume_base=volume_base,
+                oi_base=oi_base,
+                random_seed=cfg.random_seed
+                + _stable_underlying_offset(ul)
+                + date_index * 1_000_003,
+            )
             key = f"{ul}_{obs_date.isoformat()}"
             dataset[key] = generate_synthetic_surface(ul_cfg, obs_date)
 
     return dataset
+
+
+def dataclass_replace(config: SyntheticSurfaceConfig, **updates: object) -> SyntheticSurfaceConfig:
+    payload = asdict(config)
+    payload.update(updates)
+    return SyntheticSurfaceConfig(**payload)
+
+
+def _ar1_update(
+    current: float,
+    target: float,
+    phi: float,
+    innovation_scale: float,
+    rng: np.random.Generator,
+    lower: float,
+    upper: float,
+) -> float:
+    value = phi * current + (1.0 - phi) * target + rng.normal(0.0, innovation_scale)
+    return float(np.clip(value, lower, upper))
+
+
+def stable_synthetic_logical_hash(dataset: dict[str, list[SyntheticQuote]]) -> str:
+    """Stable hash over sorted logical synthetic rows, not Parquet bytes."""
+
+    rows: list[dict[str, object]] = []
+    for surface_id, quotes in dataset.items():
+        for quote in quotes:
+            row = quote._asdict()
+            row["surface_id"] = surface_id
+            rows.append(row)
+    canonical_columns = [
+        "surface_id",
+        "market",
+        "underlying",
+        "observation_date",
+        "expiry",
+        "strike",
+        "option_type",
+        "bid",
+        "ask",
+        "implied_vol",
+        "volume",
+        "open_interest",
+        "forward",
+        "underlying_price",
+        "log_moneyness",
+        "tenor_years",
+        "delta",
+        "vega",
+        "spread_pct",
+        "liquidity_score",
+        "oracle_clean_iv",
+        "oracle_clean_price",
+        "oracle_latent_log_precision",
+        "oracle_noise_std",
+        "oracle_surface_family",
+        "oracle_event_bump_flag",
+    ]
+    rows = sorted(
+        rows,
+        key=lambda row: (
+            str(row["surface_id"]),
+            str(row["option_type"]),
+            str(row["expiry"]),
+            float(cast(float | int | str, row["strike"])),
+        ),
+    )
+    lines = [",".join(canonical_columns)]
+    for row in rows:
+        values = []
+        for column in canonical_columns:
+            value = row[column]
+            if isinstance(value, float):
+                values.append(f"{round(value, 12):.12g}")
+            elif isinstance(value, date):
+                values.append(value.isoformat())
+            else:
+                values.append(str(value))
+        lines.append(",".join(values))
+    return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
+
+
+def stable_synthetic_config_hash(config: SyntheticSurfaceConfig) -> str:
+    payload = json.dumps(asdict(config), sort_keys=True, default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def synthetic_no_arbitrage_diagnostics(quotes: list[SyntheticQuote]) -> dict[str, object]:
+    """Dense-grid diagnostics on oracle clean synthetic prices and IVs."""
+
+    return {
+        "calendar": _synthetic_calendar_diagnostics(quotes),
+        "butterfly_convexity": _synthetic_convexity_diagnostics(quotes),
+        "vertical_spread": _synthetic_vertical_diagnostics(quotes),
+    }
+
+
+def _synthetic_calendar_diagnostics(quotes: list[SyntheticQuote]) -> dict[str, float | int]:
+    magnitudes: list[float] = []
+    pairs = 0
+    grouped: dict[tuple[str, str, str, str, float], list[SyntheticQuote]] = {}
+    for quote in quotes:
+        key = (
+            quote.market,
+            quote.underlying,
+            quote.observation_date.isoformat(),
+            quote.option_type,
+            round(quote.log_moneyness, 8),
+        )
+        grouped.setdefault(key, []).append(quote)
+    for group in grouped.values():
+        ordered = sorted(group, key=lambda quote: quote.tenor_years)
+        for near, far in zip(ordered[:-1], ordered[1:], strict=False):
+            pairs += 1
+            near_tv = near.oracle_clean_iv * near.oracle_clean_iv * near.tenor_years
+            far_tv = far.oracle_clean_iv * far.oracle_clean_iv * far.tenor_years
+            magnitudes.append(max(float(near_tv - far_tv), 0.0))
+    positives = [value for value in magnitudes if value > 0]
+    return {
+        "pairs": pairs,
+        "violations": len(positives),
+        "mean_violation": float(np.mean(positives)) if positives else 0.0,
+        "max_violation": float(np.max(positives)) if positives else 0.0,
+    }
+
+
+def _synthetic_convexity_diagnostics(quotes: list[SyntheticQuote]) -> dict[str, float | int]:
+    magnitudes: list[float] = []
+    triples = 0
+    grouped: dict[tuple[str, str, str, date], list[SyntheticQuote]] = {}
+    for quote in quotes:
+        if quote.option_type != "C":
+            continue
+        key = (quote.market, quote.underlying, quote.observation_date.isoformat(), quote.expiry)
+        grouped.setdefault(key, []).append(quote)
+    for group in grouped.values():
+        ordered = sorted(group, key=lambda quote: quote.strike)
+        if len(ordered) < 3:
+            continue
+        strikes = np.array([quote.strike / quote.forward for quote in ordered], dtype=float)
+        prices = np.array(
+            [quote.oracle_clean_price / quote.forward for quote in ordered], dtype=float
+        )
+        for i in range(1, len(ordered) - 1):
+            k1, k2, k3 = strikes[i - 1], strikes[i], strikes[i + 1]
+            if k3 <= k1:
+                continue
+            p1, p2, p3 = prices[i - 1], prices[i], prices[i + 1]
+            alpha = (k3 - k2) / (k3 - k1)
+            beta = (k2 - k1) / (k3 - k1)
+            triples += 1
+            magnitudes.append(max(float(p2 - (alpha * p1 + beta * p3)), 0.0))
+    positives = [value for value in magnitudes if value > 0]
+    return {
+        "triples": triples,
+        "violations": len(positives),
+        "mean_violation": float(np.mean(positives)) if positives else 0.0,
+        "max_violation": float(np.max(positives)) if positives else 0.0,
+    }
+
+
+def _synthetic_vertical_diagnostics(quotes: list[SyntheticQuote]) -> dict[str, float | int]:
+    magnitudes: list[float] = []
+    pairs = 0
+    grouped: dict[tuple[str, str, str, date], list[SyntheticQuote]] = {}
+    for quote in quotes:
+        if quote.option_type != "C":
+            continue
+        key = (quote.market, quote.underlying, quote.observation_date.isoformat(), quote.expiry)
+        grouped.setdefault(key, []).append(quote)
+    for group in grouped.values():
+        ordered = sorted(group, key=lambda quote: quote.strike)
+        for left, right in zip(ordered[:-1], ordered[1:], strict=False):
+            left_k = left.strike / left.forward
+            right_k = right.strike / right.forward
+            if right_k <= left_k:
+                continue
+            left_price = left.oracle_clean_price / left.forward
+            right_price = right.oracle_clean_price / right.forward
+            slope = (right_price - left_price) / (right_k - left_k)
+            pairs += 1
+            magnitudes.append(max(float(slope), 0.0) + max(float(-1.0 - slope), 0.0))
+    positives = [value for value in magnitudes if value > 0]
+    return {
+        "pairs": pairs,
+        "violations": len(positives),
+        "mean_violation": float(np.mean(positives)) if positives else 0.0,
+        "max_violation": float(np.max(positives)) if positives else 0.0,
+    }
 
 
 def _stable_underlying_offset(underlying: str) -> int:

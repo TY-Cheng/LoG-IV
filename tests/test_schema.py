@@ -45,6 +45,25 @@ def test_quote_properties_allow_missing_quote_and_reference_fields() -> None:
     assert quote.log_moneyness is None
 
 
+def test_quote_schema_hard_drops_oracle_fields() -> None:
+    quote = OptionQuote.model_validate(
+        {
+            "market": "US",
+            "underlying": "SPY",
+            "observation_date": date(2026, 1, 2),
+            "expiry": date(2026, 2, 20),
+            "strike": 100.0,
+            "option_type": "C",
+            "oracle_clean_iv": 0.2,
+            "oracle_latent_log_precision": 3.0,
+        }
+    )
+
+    payload = quote.model_dump()
+    assert "oracle_clean_iv" not in payload
+    assert "oracle_latent_log_precision" not in payload
+
+
 def test_quote_validation_rejects_expired_contract() -> None:
     with pytest.raises(ValueError, match="expiry"):
         OptionQuote(

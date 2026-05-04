@@ -1,6 +1,7 @@
 # LoG-IV
 
-Liquidity-Aware Graph Neural Operators for Option Surface Learning.
+Leakage-safe benchmark and heteroscedastic graph operators for
+liquidity-marked option surfaces.
 
 This repository is an exploration-stage research project for LoG-oriented
 option-surface learning. The working idea is to treat option chains as irregular
@@ -10,15 +11,16 @@ making any graph-learning paper claim.
 
 ## Research Question
 
-Can liquidity-aware graph or token operators learn option surfaces more robustly
-than grid-based or pointwise baselines when the observed chain is sparse,
-asynchronous, and liquidity-skewed?
+Can reliability-conditioned graph or token operators learn option surfaces more
+robustly than grid-based or pointwise baselines when the observed chain is
+irregular, heteroscedastic, sparse, and liquidity-skewed?
 
 The intended empirical ladder is:
 
 - U.S. option-chain representation learning from Massive options and equities.
 - Surface reconstruction, forecasting, and missing-quote robustness tasks.
-- Liquidity-aware message passing and no-arbitrage regularization.
+- Liquidity-aware message passing, heteroscedastic reliability modeling, and
+  decoded-price surface diagnostics.
 - Japan option/equity transfer or OOD tests using J-Quants and public data where
   field coverage is strong enough.
 
@@ -59,7 +61,7 @@ Implemented now:
   date loops.
 - First inferred-IV path for Massive day aggregates using option mid prices and
   same-date U.S. stock daily closes.
-- Expanded U.S. silver with 1,240 usable surfaces and expanded Japan silver with
+- Expanded U.S. silver with 2,480 usable surfaces and expanded Japan silver with
   31 usable observation dates.
 
 Not implemented yet:
@@ -116,7 +118,7 @@ just benchmark-a1 stratified
 ```
 
 By default it requires masked reconstruction, temporal splits, three seeds, and
-at least 1,000 usable U.S. surfaces across 31 U.S. observation dates. If the
+at least 2,400 usable U.S. surfaces across 60 U.S. observation dates. If the
 local data do not meet that gate, it writes
 `reports/runs/data_expansion_report.json` instead of promoting a run.
 The data-expansion report records expanded silver paths, deduplication counts,
@@ -143,8 +145,8 @@ Never commit vendor secrets or licensed raw payloads.
 
 ## Claim Boundaries
 
-- This is an option-surface representation-learning project, not a trading
-  strategy or execution system.
+- This is a graph-learning benchmark and option-surface representation-learning
+  project, not a trading strategy or execution system.
 - A lower reconstruction or forecast loss is not sufficient for a finance claim
   unless liquidity, missingness, no-arbitrage diagnostics, and OOD behavior are
   reported together.

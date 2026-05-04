@@ -9,7 +9,7 @@ assumptions, and OOD data gates.
 | Source | Role | Initial status | Notes |
 | --- | --- | --- | --- |
 | Massive U.S. equities | Underlying prices, returns, realized-volatility controls | Flat-file stock daily closes work locally | Current IV inversion uses same-date `us_stocks_sip/day_aggs_v1` closes as spot/forward proxies. |
-| Massive U.S. options | U.S. option chains, quotes, trades, or aggregates depending entitlement | OPRA daily flat-file expansion works locally | Current expanded U.S. silver has 1,240 usable surfaces after filtering. |
+| Massive U.S. options | U.S. option chains, quotes, trades, or aggregates depending entitlement | OPRA daily flat-file expansion works locally | Current expanded U.S. silver has 2,480 usable surfaces after filtering. |
 | J-Quants equities | Japanese underlying prices and corporate-action context | V2 API-key probe works locally | Needed for Japan OOD features and realized-vol targets. |
 | J-Quants derivatives/options | Japanese listed option or derivatives chains where available | V2 date-loop expansion works locally | Current expanded Japan silver has 31 usable observation dates. |
 | Public calendars | U.S. and Japan trading sessions and holidays | Core public dependency | Needed for date alignment and cutoff validity. |
@@ -176,18 +176,17 @@ The current expanded U.S. table is:
 data/silver/option_quotes/us_option_quotes_expanded.parquet
 ```
 
-It covers 40 U.S. underlyings from 2026-03-18 to 2026-04-30 and records:
+It covers 40 U.S. underlyings from 2026-02-02 to 2026-04-30 and records:
 
-- 1,516,612 deduplicated rows;
-- 1,456,358 IV-usable rows;
-- 31 usable observation dates;
-- 1,240 usable `(underlying, observation_date)` surfaces under
+- 2,979,716 deduplicated rows;
+- 62 usable observation dates;
+- 2,480 usable `(underlying, observation_date)` surfaces under
   `min_nodes_per_surface=20`;
 - `iv_source=option_mid_price_with_underlying_daily_close`;
 - `iv_method=black_forward_bisection_zero_rate_zero_dividend`.
 
-This table is frozen as `data_v0`. It is for pipeline, protocol, and baseline
-development, not final paper tables.
+This table is frozen as `data_v1`. It is suitable for Protocol A development
+and first credible benchmark runs, but not yet for market-cycle temporal claims.
 
 ## Data Version Ladder
 

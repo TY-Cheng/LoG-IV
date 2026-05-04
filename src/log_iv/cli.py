@@ -239,6 +239,10 @@ def _training_config_from_args(
     convexity_weight: float | None = None,
     smoothness_weight: float | None = None,
     contrastive_weight: float | None = None,
+    heteroscedastic_weight: float | None = None,
+    reliability_gate_weight: float | None = None,
+    use_liquidity_features: bool | None = None,
+    use_liquidity_gate: bool | None = None,
 ) -> Any:
     from log_iv.train import TrainingConfig
 
@@ -277,6 +281,18 @@ def _training_config_from_args(
         butterfly_weight=args.butterfly_weight if butterfly_weight is None else butterfly_weight,
         put_call_weight=args.put_call_weight if put_call_weight is None else put_call_weight,
         convexity_weight=args.convexity_weight if convexity_weight is None else convexity_weight,
+        heteroscedastic_weight=args.heteroscedastic_weight
+        if heteroscedastic_weight is None
+        else heteroscedastic_weight,
+        reliability_gate_weight=args.reliability_gate_weight
+        if reliability_gate_weight is None
+        else reliability_gate_weight,
+        use_liquidity_features=args.use_liquidity_features
+        if use_liquidity_features is None
+        else use_liquidity_features,
+        use_liquidity_gate=args.use_liquidity_gate
+        if use_liquidity_gate is None
+        else use_liquidity_gate,
         greeks_weight=args.greeks_weight,
         device=args.device,
         torch_num_threads=args.torch_threads,
@@ -714,6 +730,11 @@ def _cmd_benchmark_protocol(args: argparse.Namespace) -> None:
         f"baseline_eval_splits={args.baseline_eval_splits}, "
         f"svi_timeout_seconds={args.svi_timeout_seconds}, "
         f"svi_maxiter={args.svi_maxiter}, "
+        f"variant_suite={args.variant_suite}, "
+        f"heteroscedastic_weight={args.heteroscedastic_weight}, "
+        f"reliability_gate_weight={args.reliability_gate_weight}, "
+        f"use_liquidity_features={args.use_liquidity_features}, "
+        f"use_liquidity_gate={args.use_liquidity_gate}, "
         f"no_arb_mode={args.no_arb_diagnostics_mode}, "
         f"no_arb_splits={args.no_arb_eval_splits}, "
         f"no_arb_max_surfaces_per_split={args.no_arb_max_surfaces_per_split}",
@@ -737,6 +758,10 @@ def _cmd_benchmark_protocol(args: argparse.Namespace) -> None:
             "convexity_weight": 0.0,
             "smoothness_weight": 0.0,
             "contrastive_weight": 0.0,
+            "heteroscedastic_weight": 0.0,
+            "reliability_gate_weight": 0.0,
+            "use_liquidity_features": True,
+            "use_liquidity_gate": False,
         },
         {
             "name": "gnn_no_liq",
@@ -749,6 +774,10 @@ def _cmd_benchmark_protocol(args: argparse.Namespace) -> None:
             "convexity_weight": 0.0,
             "smoothness_weight": args.smoothness_weight,
             "contrastive_weight": args.contrastive_weight,
+            "heteroscedastic_weight": 0.0,
+            "reliability_gate_weight": 0.0,
+            "use_liquidity_features": False,
+            "use_liquidity_gate": False,
         },
         {
             "name": "gnn_liq",
@@ -761,6 +790,10 @@ def _cmd_benchmark_protocol(args: argparse.Namespace) -> None:
             "convexity_weight": 0.0,
             "smoothness_weight": args.smoothness_weight,
             "contrastive_weight": args.contrastive_weight,
+            "heteroscedastic_weight": 0.0,
+            "reliability_gate_weight": 0.0,
+            "use_liquidity_features": True,
+            "use_liquidity_gate": True,
         },
         {
             "name": "gnn_decoded_calendar_convexity",
@@ -773,8 +806,112 @@ def _cmd_benchmark_protocol(args: argparse.Namespace) -> None:
             "convexity_weight": args.convexity_weight,
             "smoothness_weight": args.smoothness_weight,
             "contrastive_weight": args.contrastive_weight,
+            "heteroscedastic_weight": 0.0,
+            "reliability_gate_weight": 0.0,
+            "use_liquidity_features": True,
+            "use_liquidity_gate": True,
         },
     ]
+    if args.variant_suite == "lagos_v2":
+        variants = [
+            *variants,
+            {
+                "name": "lagos_no_liquidity",
+                "model_kind": "gnn",
+                "similarity_edges_per_node": 0,
+                "no_arb_weight": 0.0,
+                "calendar_weight": 0.0,
+                "butterfly_weight": 0.0,
+                "put_call_weight": 0.0,
+                "convexity_weight": 0.0,
+                "smoothness_weight": args.smoothness_weight,
+                "contrastive_weight": args.contrastive_weight,
+                "heteroscedastic_weight": 0.0,
+                "reliability_gate_weight": 0.0,
+                "use_liquidity_features": False,
+                "use_liquidity_gate": False,
+            },
+            {
+                "name": "lagos_liq_feature_only",
+                "model_kind": "gnn",
+                "similarity_edges_per_node": 0,
+                "no_arb_weight": 0.0,
+                "calendar_weight": 0.0,
+                "butterfly_weight": 0.0,
+                "put_call_weight": 0.0,
+                "convexity_weight": 0.0,
+                "smoothness_weight": args.smoothness_weight,
+                "contrastive_weight": args.contrastive_weight,
+                "heteroscedastic_weight": 0.0,
+                "reliability_gate_weight": 0.0,
+                "use_liquidity_features": True,
+                "use_liquidity_gate": False,
+            },
+            {
+                "name": "lagos_scalar_gate",
+                "model_kind": "gnn",
+                "similarity_edges_per_node": args.similarity_edges_per_node,
+                "no_arb_weight": 0.0,
+                "calendar_weight": 0.0,
+                "butterfly_weight": 0.0,
+                "put_call_weight": 0.0,
+                "convexity_weight": 0.0,
+                "smoothness_weight": args.smoothness_weight,
+                "contrastive_weight": args.contrastive_weight,
+                "heteroscedastic_weight": 0.0,
+                "reliability_gate_weight": 0.0,
+                "use_liquidity_features": True,
+                "use_liquidity_gate": True,
+            },
+            {
+                "name": "lagos_loss_only",
+                "model_kind": "gnn",
+                "similarity_edges_per_node": args.similarity_edges_per_node,
+                "no_arb_weight": 0.0,
+                "calendar_weight": 0.0,
+                "butterfly_weight": 0.0,
+                "put_call_weight": 0.0,
+                "convexity_weight": 0.0,
+                "smoothness_weight": args.smoothness_weight,
+                "contrastive_weight": args.contrastive_weight,
+                "heteroscedastic_weight": args.heteroscedastic_weight or 1.0,
+                "reliability_gate_weight": 0.0,
+                "use_liquidity_features": True,
+                "use_liquidity_gate": False,
+            },
+            {
+                "name": "lagos_attn_only",
+                "model_kind": "gnn",
+                "similarity_edges_per_node": args.similarity_edges_per_node,
+                "no_arb_weight": 0.0,
+                "calendar_weight": 0.0,
+                "butterfly_weight": 0.0,
+                "put_call_weight": 0.0,
+                "convexity_weight": 0.0,
+                "smoothness_weight": args.smoothness_weight,
+                "contrastive_weight": args.contrastive_weight,
+                "heteroscedastic_weight": 0.0,
+                "reliability_gate_weight": args.reliability_gate_weight or 1.0,
+                "use_liquidity_features": True,
+                "use_liquidity_gate": False,
+            },
+            {
+                "name": "lagos_hetero_full",
+                "model_kind": "gnn",
+                "similarity_edges_per_node": args.similarity_edges_per_node,
+                "no_arb_weight": 0.0,
+                "calendar_weight": 0.0,
+                "butterfly_weight": 0.0,
+                "put_call_weight": 0.0,
+                "convexity_weight": 0.0,
+                "smoothness_weight": args.smoothness_weight,
+                "contrastive_weight": args.contrastive_weight,
+                "heteroscedastic_weight": args.heteroscedastic_weight or 1.0,
+                "reliability_gate_weight": args.reliability_gate_weight or 1.0,
+                "use_liquidity_features": True,
+                "use_liquidity_gate": True,
+            },
+        ]
     if args.variants:
         selected = {item.strip() for item in args.variants.split(",") if item.strip()}
         known = {str(variant["name"]) for variant in variants}
@@ -805,6 +942,10 @@ def _cmd_benchmark_protocol(args: argparse.Namespace) -> None:
                 convexity_weight=float(variant["convexity_weight"]),
                 smoothness_weight=float(variant["smoothness_weight"]),
                 contrastive_weight=float(variant["contrastive_weight"]),
+                heteroscedastic_weight=float(variant["heteroscedastic_weight"]),
+                reliability_gate_weight=float(variant["reliability_gate_weight"]),
+                use_liquidity_features=bool(variant["use_liquidity_features"]),
+                use_liquidity_gate=bool(variant["use_liquidity_gate"]),
             )
             run_option_quote_dataset_experiment(
                 us_graphs,
@@ -937,6 +1078,9 @@ def _matrix_row(run_dir: Path, *, market: str, variant: str, claim_label: str) -
         "pred_calendar_violations": no_arb.get("pred_iv", {}).get("calendar", {}).get("violations"),
         "pred_convexity_violations": no_arb.get("pred_iv", {})
         .get("butterfly_convexity", {})
+        .get("violations"),
+        "pred_vertical_spread_violations": no_arb.get("pred_iv", {})
+        .get("vertical_spread", {})
         .get("violations"),
         "pred_put_call_pairs": no_arb.get("pred_iv", {}).get("put_call_parity", {}).get("pairs"),
     }
@@ -1083,6 +1227,12 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--no-arb-weight", type=float, default=1.0)
     parser.add_argument("--smoothness-weight", type=float, default=0.1)
     parser.add_argument("--contrastive-weight", type=float, default=0.2)
+    parser.add_argument("--heteroscedastic-weight", type=float, default=0.0)
+    parser.add_argument("--reliability-gate-weight", type=float, default=0.0)
+    parser.add_argument(
+        "--use-liquidity-features", action=argparse.BooleanOptionalAction, default=True
+    )
+    parser.add_argument("--use-liquidity-gate", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--calendar-weight", type=float, default=1.0)
     parser.add_argument("--butterfly-weight", type=float, default=1.0)
     parser.add_argument("--put-call-weight", type=float, default=0.5)
@@ -1229,8 +1379,17 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         default="",
         help=(
-            "Comma-separated subset: encoder_mlp,gnn_no_liq,gnn_liq,gnn_decoded_calendar_convexity"
+            "Comma-separated subset of the active variant suite. Core variants: "
+            "encoder_mlp,gnn_no_liq,gnn_liq,gnn_decoded_calendar_convexity. "
+            "lagos_v2 additionally exposes lagos_no_liquidity,lagos_liq_feature_only,"
+            "lagos_scalar_gate,lagos_loss_only,lagos_attn_only,lagos_hetero_full."
         ),
+    )
+    p_benchmark.add_argument(
+        "--variant-suite",
+        choices=["core", "lagos_v2"],
+        default="core",
+        help="Variant registry to use. core keeps the local A1 matrix compact.",
     )
     p_benchmark.add_argument("--allow-diagnostic-under-threshold", action="store_true")
     p_benchmark.set_defaults(

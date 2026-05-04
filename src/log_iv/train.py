@@ -72,6 +72,9 @@ class TrainingConfig:
     iv_recon_weight: float = 1.0
     geom_recon_weight: float = 0.5
     liq_recon_weight: float = 0.3
+    heteroscedastic_weight: float = 0.0
+    reliability_gate_weight: float = 0.0
+    reliability_epsilon: float = 1e-4
     greeks_weight: float = 0.0
     no_arb_weight: float = 1.0
     smoothness_weight: float = 0.1
@@ -87,6 +90,8 @@ class TrainingConfig:
 
     # Data
     similarity_edges_per_node: int = 3
+    use_liquidity_features: bool = True
+    use_liquidity_gate: bool = True
     val_split: float = 0.15
     test_split: float = 0.15
     split_mode: str = "random"
@@ -135,6 +140,7 @@ class TrainingMetrics:
     iv_recon_loss: float = 0.0
     geom_recon_loss: float = 0.0
     liq_recon_loss: float = 0.0
+    heteroscedastic_loss: float = 0.0
     greeks_loss: float = 0.0
     no_arb_loss: float = 0.0
     smoothness_loss: float = 0.0
@@ -181,6 +187,18 @@ def _surface_mask(surface: Any) -> tuple[bool, ...]:
 
 def _surface_observed_flags(surface: Any) -> tuple[bool, ...]:
     return tuple(not value for value in _surface_mask(surface))
+
+
+def _masked_query_quote(quote: OptionQuote) -> OptionQuote:
+    return quote.model_copy(
+        update={
+            "bid": None,
+            "ask": None,
+            "implied_vol": None,
+            "volume": 0,
+            "open_interest": 0,
+        }
+    )
 
 
 def _surface_id(surface: Any, fallback: str) -> str:
@@ -259,6 +277,7 @@ class OptionTokenGNN(nn.Module):
             nn.GELU(),
             nn.Linear(cfg.d_model, cfg.d_model),
         )
+        self.reliability_head = nn.Linear(cfg.d_model, 1)
 
     def encode_graph(
         self,
@@ -269,11 +288,17 @@ class OptionTokenGNN(nn.Module):
         input_quotes = _surface_input_quotes(quotes)
         target_quotes = _surface_target_quotes(quotes)
         target_mask_tuple = _surface_mask(quotes)
+        input_quotes = [
+            _masked_query_quote(quote) if is_masked else quote
+            for quote, is_masked in zip(input_quotes, target_mask_tuple, strict=True)
+        ]
         observed_flags = _surface_observed_flags(quotes)
 
         # Extract model inputs and separate target features. Masked reconstruction
         # removes held-out IV/price values from ``input_quotes`` only.
         geom, price, liq = extract_features_from_quotes(input_quotes, device, observed_flags)
+        if not self.config.use_liquidity_features:
+            liq = torch.zeros_like(liq)
         target_geom, target_price, target_liq = extract_features_from_quotes(
             target_quotes,
             device,
@@ -284,34 +309,53 @@ class OptionTokenGNN(nn.Module):
         # Encode
         enc_out = self.encoder(geom, price, liq)
         node_embeddings = enc_out["h"]
+        input_log_precision = self.reliability_head(node_embeddings).clamp(-8.0, 8.0)
+        message_embeddings = _reliability_gated_embeddings(
+            node_embeddings,
+            input_log_precision,
+            self.config.reliability_gate_weight,
+        )
 
         # Build graph
         graph = _cached_option_surface_graph(
             input_quotes,
             similarity_edges_per_node=self.config.similarity_edges_per_node,
         )
-        hetero_data = build_hetero_data_from_graph(input_quotes, node_embeddings, graph, device)
+        hetero_data = build_hetero_data_from_graph(input_quotes, message_embeddings, graph, device)
 
         if self.use_gnn and self.gnn is not None:
             # GNN forward
-            gnn_out = self.gnn(node_embeddings, hetero_data, liq)
+            gnn_liquidity = liq if self.config.use_liquidity_gate else None
+            gnn_out = self.gnn(message_embeddings, hetero_data, gnn_liquidity)
 
             # Re-decode from GNN outputs
             refined_embeddings = gnn_out["node_embeddings"]
             surface_embedding = gnn_out["surface_embedding"]
             layer_outputs = gnn_out["layer_outputs"]
-            iv_pred = self.encoder.iv_head(refined_embeddings)
-            geom_recon_g = self.encoder.geom_head(refined_embeddings)
-            liq_recon_g = self.encoder.liquidity_head(refined_embeddings)
-            greeks_pred_g = self.encoder.greeks_head(refined_embeddings)
+            log_precision = self.reliability_head(refined_embeddings).clamp(-8.0, 8.0)
+            decode_embeddings = _reliability_gated_embeddings(
+                refined_embeddings,
+                log_precision,
+                self.config.reliability_gate_weight,
+            )
+            iv_pred = self.encoder.iv_head(decode_embeddings)
+            geom_recon_g = self.encoder.geom_head(decode_embeddings)
+            liq_recon_g = self.encoder.liquidity_head(decode_embeddings)
+            greeks_pred_g = self.encoder.greeks_head(decode_embeddings)
         else:
-            refined_embeddings = node_embeddings
-            surface_embedding = node_embeddings.mean(dim=0)
+            refined_embeddings = message_embeddings
+            surface_embedding = message_embeddings.mean(dim=0)
             layer_outputs = []
-            iv_pred = enc_out["iv_pred"]
-            geom_recon_g = enc_out["geom_recon"]
-            liq_recon_g = enc_out["liq_recon"]
-            greeks_pred_g = enc_out["greeks_pred"]
+            log_precision = input_log_precision
+            decode_embeddings = _reliability_gated_embeddings(
+                refined_embeddings,
+                log_precision,
+                self.config.reliability_gate_weight,
+            )
+            iv_pred = self.encoder.iv_head(decode_embeddings)
+            geom_recon_g = self.encoder.geom_head(decode_embeddings)
+            liq_recon_g = self.encoder.liquidity_head(decode_embeddings)
+            greeks_pred_g = self.encoder.greeks_head(decode_embeddings)
 
         return {
             "node_embeddings": refined_embeddings,
@@ -320,6 +364,7 @@ class OptionTokenGNN(nn.Module):
             "geom_recon": geom_recon_g,
             "liq_recon": liq_recon_g,
             "greeks_pred": greeks_pred_g,
+            "log_precision": log_precision,
             "geom": geom,
             "price": price,
             "liquidity": liq,
@@ -339,6 +384,19 @@ class OptionTokenGNN(nn.Module):
     ) -> list[dict[str, torch.Tensor]]:
         """Forward pass on a batch of graphs."""
         return [self.encode_graph(quotes, device) for quotes in batch_quotes]
+
+
+def _reliability_gated_embeddings(
+    embeddings: torch.Tensor,
+    log_precision: torch.Tensor,
+    gate_weight: float,
+) -> torch.Tensor:
+    if gate_weight == 0:
+        return embeddings
+    weight = float(np.clip(gate_weight, 0.0, 1.0))
+    gate = torch.sigmoid(log_precision)
+    factor = 1.0 + weight * (gate - 0.5)
+    return embeddings * factor
 
 
 def compute_losses(
@@ -366,6 +424,7 @@ def compute_losses(
     total_iv_recon = torch.tensor(0.0, device=device)
     total_geom_recon = torch.tensor(0.0, device=device)
     total_liq_recon = torch.tensor(0.0, device=device)
+    total_heteroscedastic = torch.tensor(0.0, device=device)
     total_greeks = torch.tensor(0.0, device=device)
     total_no_arb = torch.tensor(0.0, device=device)
     total_smoothness = torch.tensor(0.0, device=device)
@@ -379,10 +438,18 @@ def compute_losses(
         else:
             iv_mask = iv_true > 0
         if bool(iv_mask.any().item()):
-            iv_loss = torch.abs(iv_pred[iv_mask] - iv_true[iv_mask]).mean()
+            iv_error = iv_pred[iv_mask] - iv_true[iv_mask]
+            iv_loss = torch.abs(iv_error).mean()
+            if config.heteroscedastic_weight != 0:
+                precision = F.softplus(out["log_precision"][iv_mask]) + config.reliability_epsilon
+                hetero_loss = 0.5 * (precision * iv_error.square() - torch.log(precision)).mean()
+            else:
+                hetero_loss = torch.tensor(0.0, device=device)
         else:
             iv_loss = torch.tensor(0.0, device=device)
+            hetero_loss = torch.tensor(0.0, device=device)
         total_iv_recon = total_iv_recon + iv_loss
+        total_heteroscedastic = total_heteroscedastic + hetero_loss
 
         # Geometry reconstruction
         geom_pred = out["geom_recon"]
@@ -433,6 +500,7 @@ def compute_losses(
         "iv_recon": total_iv_recon / n,
         "geom_recon": total_geom_recon / n,
         "liq_recon": total_liq_recon / n,
+        "heteroscedastic": total_heteroscedastic / n,
         "greeks": total_greeks / n,
         "no_arb": total_no_arb / n,
         "smoothness": total_smoothness / n,
@@ -457,6 +525,7 @@ def compute_losses(
         config.iv_recon_weight * losses["iv_recon"]
         + config.geom_recon_weight * losses["geom_recon"]
         + config.liq_recon_weight * losses["liq_recon"]
+        + config.heteroscedastic_weight * losses["heteroscedastic"]
         + config.greeks_weight * losses["greeks"]
         + config.no_arb_weight * losses["no_arb"]
         + config.smoothness_weight * losses["smoothness"]
@@ -591,6 +660,7 @@ def train_epoch(
             "iv_recon",
             "geom_recon",
             "liq_recon",
+            "heteroscedastic",
             "greeks",
             "no_arb",
             "smoothness",
@@ -628,6 +698,7 @@ def train_epoch(
     metrics.iv_recon_loss = loss_detail_sum["iv_recon"] / n
     metrics.geom_recon_loss = loss_detail_sum["geom_recon"] / n
     metrics.liq_recon_loss = loss_detail_sum["liq_recon"] / n
+    metrics.heteroscedastic_loss = loss_detail_sum["heteroscedastic"] / n
     metrics.greeks_loss = loss_detail_sum["greeks"] / n
     metrics.no_arb_loss = loss_detail_sum["no_arb"] / n
     metrics.smoothness_loss = loss_detail_sum["smoothness"] / n
@@ -880,17 +951,7 @@ def _prepare_surface_for_task(
         return quotes
     mask = _deterministic_surface_mask(quotes, config, surface_id, split)
     input_quotes = [
-        quote.model_copy(
-            update={
-                "bid": None,
-                "ask": None,
-                "implied_vol": None,
-                "volume": 0,
-                "open_interest": 0,
-            }
-        )
-        if is_masked
-        else quote
+        _masked_query_quote(quote) if is_masked else quote
         for quote, is_masked in zip(quotes, mask, strict=True)
     ]
     return SurfaceData(
@@ -1152,6 +1213,7 @@ def train(
                     "iv_recon_loss": m.iv_recon_loss,
                     "geom_recon_loss": m.geom_recon_loss,
                     "liq_recon_loss": m.liq_recon_loss,
+                    "heteroscedastic_loss": m.heteroscedastic_loss,
                     "no_arb_loss": m.no_arb_loss,
                     "smoothness_loss": m.smoothness_loss,
                     "contrastive_loss": m.contrastive_loss,
@@ -1367,6 +1429,7 @@ def _metrics_to_dict(metric: TrainingMetrics) -> dict[str, float | int]:
         "iv_recon_loss": metric.iv_recon_loss,
         "geom_recon_loss": metric.geom_recon_loss,
         "liq_recon_loss": metric.liq_recon_loss,
+        "heteroscedastic_loss": metric.heteroscedastic_loss,
         "greeks_loss": metric.greeks_loss,
         "no_arb_regularizer_loss": metric.no_arb_loss,
         "smoothness_loss": metric.smoothness_loss,
@@ -2698,6 +2761,7 @@ def _no_arbitrage_for_iv_column(predictions: pd.DataFrame, iv_col: str) -> dict[
     return {
         "calendar": _calendar_diagnostics(valid),
         "butterfly_convexity": _convexity_diagnostics(valid),
+        "vertical_spread": _vertical_spread_diagnostics(valid),
         "put_call_parity": _put_call_diagnostics(valid),
     }
 
@@ -2707,6 +2771,7 @@ def _empty_no_arb_payload() -> dict[str, Any]:
     return {
         "calendar": empty,
         "butterfly_convexity": {"triples": 0, "violations": 0, "mean_violation": 0.0},
+        "vertical_spread": empty,
         "put_call_parity": {"pairs": 0, "mean_abs_residual": 0.0, "p95_abs_residual": 0.0},
     }
 
@@ -2757,6 +2822,48 @@ def _convexity_diagnostics(frame: pd.DataFrame) -> dict[str, Any]:
         "triples": triples,
         "violations": len(positives),
         "mean_violation": float(np.mean(positives)) if positives else 0.0,
+    }
+
+
+def _vertical_spread_diagnostics(frame: pd.DataFrame) -> dict[str, Any]:
+    """Europeanized call vertical-spread monotonicity diagnostic.
+
+    Uses normalized Black-forward call prices C/F and normalized strikes K/F, so
+    the no-arbitrage slope interval is [-1, 0] on European call surfaces.
+    """
+
+    magnitudes: list[float] = []
+    pairs = 0
+    group_cols = ["split", "surface_id", "expiry"]
+    calls = frame[frame["option_type"] == "C"].copy()
+    if calls.empty:
+        return {"pairs": 0, "violations": 0, "mean_violation": 0.0, "max_violation": 0.0}
+    calls["norm_strike"] = calls["strike"] / calls["reference"].replace(0, np.nan)
+    calls = calls[calls["norm_strike"].notna() & np.isfinite(calls["norm_strike"])]
+    for _, group in calls.groupby(group_cols, dropna=False):
+        ordered = group.sort_values("norm_strike")
+        if len(ordered) < 2:
+            continue
+        strikes = ordered["norm_strike"].to_numpy(dtype=float)
+        prices = ordered["norm_price"].to_numpy(dtype=float)
+        for left_k, right_k, left_price, right_price in zip(
+            strikes[:-1],
+            strikes[1:],
+            prices[:-1],
+            prices[1:],
+            strict=False,
+        ):
+            if right_k <= left_k:
+                continue
+            slope = (right_price - left_price) / (right_k - left_k)
+            pairs += 1
+            magnitudes.append(max(float(slope), 0.0) + max(float(-1.0 - slope), 0.0))
+    positives = [value for value in magnitudes if value > 0]
+    return {
+        "pairs": pairs,
+        "violations": len(positives),
+        "mean_violation": float(np.mean(positives)) if positives else 0.0,
+        "max_violation": float(np.max(positives)) if positives else 0.0,
     }
 
 

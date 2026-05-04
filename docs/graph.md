@@ -62,10 +62,16 @@ an engineering implementation detail, not as paper evidence.
 
 ## Masking Semantics
 
-For masked reconstruction, target nodes keep their option-token geometry and
-liquidity context, but IV, bid, and ask are removed from model inputs. Target
-quotes remain available only to the loss, metrics, and diagnostics. This rule is
-part of the benchmark protocol and should not be relaxed in graph construction.
+For masked reconstruction, target query nodes keep only option-token geometry
+and non quote-derived metadata. Same-day quote-derived fields are removed from
+masked model inputs: IV, bid, ask, mid, spread, volume, open interest,
+quote-derived liquidity scores, decoded prices, and IV-derived Greeks. Target
+quotes remain available only to the loss, metrics, and diagnostics.
+
+Visible nodes may carry quote-derived liquidity marks. Visible-context
+aggregates must be computed after the mask is applied and strictly from visible
+nodes. This rule is part of the benchmark protocol and should not be relaxed in
+graph construction.
 
 ## No-Arbitrage Hooks
 
@@ -73,6 +79,7 @@ No-arbitrage checks are diagnostics at initialization. Candidate checks:
 
 - call price nonincreasing in strike;
 - put price nondecreasing in strike;
+- call vertical-spread slope diagnostics;
 - convexity across strikes;
 - calendar monotonicity for comparable moneyness;
 - put-call parity residuals when rates, dividends, and forwards are available.
