@@ -13,7 +13,10 @@ Provides subcommands:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
+import pickle
 import sys
 from dataclasses import replace
 from datetime import date, datetime
@@ -25,6 +28,8 @@ try:
     __version__ = importlib_metadata.version("log-iv")
 except importlib_metadata.PackageNotFoundError:
     __version__ = "0.1.0"
+
+GRAPH_CACHE_VERSION = 1
 
 
 def _cmd_status(args: argparse.Namespace) -> None:
@@ -197,6 +202,8 @@ def _cmd_train(args: argparse.Namespace) -> None:
             min_nodes_per_surface=args.min_nodes_per_surface,
             max_nodes_per_surface=args.max_nodes_per_surface,
             max_surfaces=args.max_surfaces,
+            use_graph_cache=args.use_graph_cache,
+            refresh_graph_cache=args.refresh_graph_cache,
         )
         print(json.dumps(stats, indent=2, sort_keys=True))
         run_label = args.run_label
@@ -249,6 +256,7 @@ def _training_config_from_args(
             item.strip().upper() for item in args.heldout_tickers.split(",") if item.strip()
         ),
         mask_fraction=args.mask_fraction,
+        mask_regime=getattr(args, "mask_regime", "stratified"),
         output_dir=args.output_dir,
         experiment_name=experiment_name or args.experiment_name,
         seed=args.seed,
@@ -270,8 +278,18 @@ def _training_config_from_args(
         put_call_weight=args.put_call_weight if put_call_weight is None else put_call_weight,
         convexity_weight=args.convexity_weight if convexity_weight is None else convexity_weight,
         greeks_weight=args.greeks_weight,
+        device=args.device,
         torch_num_threads=args.torch_threads,
         decoded_regularizer_max_terms=args.decoded_regularizer_max_terms,
+        baseline_preset=args.baseline_preset,
+        baseline_eval_splits=_parse_split_scope(args.baseline_eval_splits),
+        svi_timeout_seconds=args.svi_timeout_seconds,
+        svi_maxiter=args.svi_maxiter,
+        postprocess_verbose=not args.quiet_postprocess,
+        no_arb_diagnostics_mode=args.no_arb_diagnostics_mode,
+        no_arb_eval_splits=_parse_split_scope(args.no_arb_eval_splits),
+        no_arb_max_surfaces_per_split=args.no_arb_max_surfaces_per_split,
+        no_arb_sample_seed=args.no_arb_sample_seed,
         synthetic_surfaces=getattr(args, "synthetic_surfaces", 8),
         synthetic_underlyings=getattr(args, "synthetic_underlyings", 2),
         synthetic_maturities=getattr(args, "synthetic_maturities", 5),
@@ -285,10 +303,23 @@ def _load_option_surface_graphs(
     min_nodes_per_surface: int,
     max_nodes_per_surface: int | None,
     max_surfaces: int | None,
+    use_graph_cache: bool = True,
+    refresh_graph_cache: bool = False,
 ) -> tuple[list[list[Any]], list[str], dict[str, int | float | str]]:
     import pandas as pd
 
     from log_iv.schema import OptionQuote
+
+    cache_payload, cache_path = _graph_cache_payload_and_path(
+        path,
+        min_nodes_per_surface=min_nodes_per_surface,
+        max_nodes_per_surface=max_nodes_per_surface,
+        max_surfaces=max_surfaces,
+    )
+    if use_graph_cache and not refresh_graph_cache:
+        cached = _read_graph_cache(cache_path, cache_payload)
+        if cached is not None:
+            return cached
 
     df = pd.read_parquet(path)
     input_rows = int(len(df))
@@ -346,28 +377,108 @@ def _load_option_surface_graphs(
         median_size = 0.0
         mean_size = 0.0
         max_size = 0
-    return (
-        all_graphs,
-        surface_ids,
-        {
-            "path": str(path),
-            "input_rows": input_rows,
-            "iv_usable_input_rows": int(len(df)),
-            "missing_iv_row_count": missing_iv_row_count,
-            "source_surface_count": source_surface_count,
-            "kept_surface_count": len(all_graphs),
-            "filtered_surface_count": source_surface_count - len(all_graphs),
-            "below_min_surface_count": below_min_count,
-            "max_surface_excluded_count": max_surface_excluded_count,
-            "capped_surface_count": capped_count,
-            "kept_rows": kept_rows,
-            "distinct_observation_date_count": len(kept_dates),
-            "surface_size_min": min_size,
-            "surface_size_median": median_size,
-            "surface_size_mean": mean_size,
-            "surface_size_max": max_size,
-        },
-    )
+    stats: dict[str, int | float | str] = {
+        "path": str(path),
+        "input_rows": input_rows,
+        "iv_usable_input_rows": int(len(df)),
+        "missing_iv_row_count": missing_iv_row_count,
+        "source_surface_count": source_surface_count,
+        "kept_surface_count": len(all_graphs),
+        "filtered_surface_count": source_surface_count - len(all_graphs),
+        "below_min_surface_count": below_min_count,
+        "max_surface_excluded_count": max_surface_excluded_count,
+        "capped_surface_count": capped_count,
+        "kept_rows": kept_rows,
+        "distinct_observation_date_count": len(kept_dates),
+        "surface_size_min": min_size,
+        "surface_size_median": median_size,
+        "surface_size_mean": mean_size,
+        "surface_size_max": max_size,
+        "graph_cache_hit": False,
+        "graph_cache_path": str(cache_path),
+    }
+    if use_graph_cache:
+        _write_graph_cache(cache_path, cache_payload, all_graphs, surface_ids, stats)
+    return all_graphs, surface_ids, stats
+
+
+def _graph_cache_payload_and_path(
+    path: str | Path,
+    *,
+    min_nodes_per_surface: int,
+    max_nodes_per_surface: int | None,
+    max_surfaces: int | None,
+) -> tuple[dict[str, Any], Path]:
+    source_path = Path(path)
+    try:
+        stat = source_path.stat()
+        resolved_path = str(source_path.resolve())
+        source_size = int(stat.st_size)
+        source_mtime_ns = int(stat.st_mtime_ns)
+    except OSError:
+        resolved_path = str(source_path)
+        source_size = -1
+        source_mtime_ns = -1
+    payload = {
+        "cache_version": GRAPH_CACHE_VERSION,
+        "source_path": resolved_path,
+        "source_size": source_size,
+        "source_mtime_ns": source_mtime_ns,
+        "min_nodes_per_surface": min_nodes_per_surface,
+        "max_nodes_per_surface": max_nodes_per_surface,
+        "max_surfaces": max_surfaces,
+    }
+    digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
+    cache_dir = Path(os.environ.get("GOLD_DATA_DIR", "data/gold")) / "graph_cache"
+    return payload, cache_dir / f"{source_path.stem}_{digest}.pkl"
+
+
+def _read_graph_cache(
+    cache_path: Path,
+    expected_payload: dict[str, Any],
+) -> tuple[list[list[Any]], list[str], dict[str, int | float | str]] | None:
+    if not cache_path.is_file():
+        return None
+    try:
+        with cache_path.open("rb") as handle:
+            payload = pickle.load(handle)
+    except (OSError, pickle.PickleError, EOFError):
+        return None
+    if not isinstance(payload, dict) or payload.get("cache_key") != expected_payload:
+        return None
+    graphs = payload.get("graphs")
+    surface_ids = payload.get("surface_ids")
+    stats = payload.get("stats")
+    if (
+        not isinstance(graphs, list)
+        or not isinstance(surface_ids, list)
+        or not isinstance(stats, dict)
+    ):
+        return None
+    stats = dict(stats)
+    stats["graph_cache_hit"] = True
+    stats["graph_cache_path"] = str(cache_path)
+    return graphs, surface_ids, stats
+
+
+def _write_graph_cache(
+    cache_path: Path,
+    cache_payload: dict[str, Any],
+    graphs: list[list[Any]],
+    surface_ids: list[str],
+    stats: dict[str, int | float | str],
+) -> None:
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = cache_path.with_name(f"{cache_path.stem}.{os.getpid()}.tmp{cache_path.suffix}")
+    payload = {
+        "cache_key": cache_payload,
+        "graphs": graphs,
+        "surface_ids": surface_ids,
+        "stats": stats,
+    }
+    with tmp_path.open("wb") as handle:
+        pickle.dump(payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
+    tmp_path.replace(cache_path)
 
 
 def _evenly_sample_group(group: Any, max_rows: int) -> Any:
@@ -393,12 +504,16 @@ def _cmd_ood_transfer(args: argparse.Namespace) -> None:
         min_nodes_per_surface=args.min_nodes_per_surface,
         max_nodes_per_surface=args.max_nodes_per_surface,
         max_surfaces=args.max_us_surfaces,
+        use_graph_cache=args.use_graph_cache,
+        refresh_graph_cache=args.refresh_graph_cache,
     )
     jp_graphs, jp_ids, jp_stats = _load_option_surface_graphs(
         args.jp_data,
         min_nodes_per_surface=args.min_nodes_per_surface,
         max_nodes_per_surface=args.max_nodes_per_surface,
         max_surfaces=args.max_jp_surfaces,
+        use_graph_cache=args.use_graph_cache,
+        refresh_graph_cache=args.refresh_graph_cache,
     )
 
     print("U.S. OOD source stats:")
@@ -432,12 +547,16 @@ def _cmd_experiment_matrix(args: argparse.Namespace) -> None:
         min_nodes_per_surface=args.min_nodes_per_surface,
         max_nodes_per_surface=args.max_nodes_per_surface,
         max_surfaces=args.max_us_surfaces,
+        use_graph_cache=args.use_graph_cache,
+        refresh_graph_cache=args.refresh_graph_cache,
     )
     jp_graphs, jp_ids, jp_stats = _load_option_surface_graphs(
         args.jp_data,
         min_nodes_per_surface=args.min_nodes_per_surface,
         max_nodes_per_surface=args.max_nodes_per_surface,
         max_surfaces=args.max_jp_surfaces,
+        use_graph_cache=args.use_graph_cache,
+        refresh_graph_cache=args.refresh_graph_cache,
     )
     print("U.S. matrix source stats:")
     print(json.dumps(us_stats, indent=2, sort_keys=True))
@@ -570,6 +689,8 @@ def _cmd_benchmark_protocol(args: argparse.Namespace) -> None:
         min_nodes_per_surface=args.min_nodes_per_surface,
         max_nodes_per_surface=args.max_nodes_per_surface,
         max_surfaces=args.max_us_surfaces,
+        use_graph_cache=args.use_graph_cache,
+        refresh_graph_cache=args.refresh_graph_cache,
     )
     jp_stats: dict[str, int | float | str] | None = None
     jp_graphs: list[list[Any]] = []
@@ -580,11 +701,24 @@ def _cmd_benchmark_protocol(args: argparse.Namespace) -> None:
             min_nodes_per_surface=args.min_nodes_per_surface,
             max_nodes_per_surface=args.max_nodes_per_surface,
             max_surfaces=args.max_jp_surfaces,
+            use_graph_cache=args.use_graph_cache,
+            refresh_graph_cache=args.refresh_graph_cache,
         )
 
     acceptance = _benchmark_data_acceptance(args, us_stats, jp_stats)
     print("Benchmark data acceptance:")
     print(json.dumps(acceptance, indent=2, sort_keys=True))
+    print(
+        "Benchmark postprocess: "
+        f"baseline_preset={args.baseline_preset}, "
+        f"baseline_eval_splits={args.baseline_eval_splits}, "
+        f"svi_timeout_seconds={args.svi_timeout_seconds}, "
+        f"svi_maxiter={args.svi_maxiter}, "
+        f"no_arb_mode={args.no_arb_diagnostics_mode}, "
+        f"no_arb_splits={args.no_arb_eval_splits}, "
+        f"no_arb_max_surfaces_per_split={args.no_arb_max_surfaces_per_split}",
+        flush=True,
+    )
     report_path = Path(args.output_dir) / "data_expansion_report.json"
     if not bool(acceptance["ok"]) and not args.allow_diagnostic_under_threshold:
         report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -703,12 +837,21 @@ def _parse_int_list(value: str) -> list[int]:
     return [int(item.strip()) for item in value.split(",") if item.strip()]
 
 
+def _parse_split_scope(value: str) -> tuple[str, ...]:
+    items = tuple(item.strip() for item in value.split(",") if item.strip())
+    if not items or any(item.lower() == "all" for item in items):
+        return ()
+    return items
+
+
 def _benchmark_data_acceptance(
     args: argparse.Namespace,
     us_stats: dict[str, int | float | str],
     jp_stats: dict[str, int | float | str] | None,
 ) -> dict[str, Any]:
-    us_ok = int(us_stats["kept_surface_count"]) >= args.min_us_surfaces
+    us_surface_ok = int(us_stats["kept_surface_count"]) >= args.min_us_surfaces
+    us_date_ok = int(us_stats["distinct_observation_date_count"]) >= args.min_us_dates
+    us_ok = us_surface_ok and us_date_ok
     jp_ok = (
         True
         if jp_stats is None
@@ -720,6 +863,8 @@ def _benchmark_data_acceptance(
             "ok": us_ok,
             "kept_surface_count": int(us_stats["kept_surface_count"]),
             "min_required_surfaces": args.min_us_surfaces,
+            "distinct_observation_date_count": int(us_stats["distinct_observation_date_count"]),
+            "min_required_observation_dates": args.min_us_dates,
             "min_nodes_per_surface": args.min_nodes_per_surface,
         },
         "jp": None
@@ -768,6 +913,7 @@ def _matrix_row(run_dir: Path, *, market: str, variant: str, claim_label: str) -
     baselines = _read_baseline_rows(run_dir / "baselines_summary.csv")
     price = json.loads((run_dir / "diagnostics_price.json").read_text())
     no_arb = json.loads((run_dir / "diagnostics_no_arbitrage.json").read_text())
+    no_arb_metadata = no_arb.get("metadata", {})
     row: dict[str, Any] = {
         "run": run_dir.name,
         "market": market,
@@ -777,12 +923,17 @@ def _matrix_row(run_dir: Path, *, market: str, variant: str, claim_label: str) -
         "iv_rmse": metrics.get("iv_rmse"),
         "masked_iv_mae": metrics.get("masked_iv_mae"),
         "masked_iv_rmse": metrics.get("masked_iv_rmse"),
+        "masked_iv_p90_abs_error": metrics.get("masked_iv_p90_abs_error"),
         "masked_count": metrics.get("masked_count"),
         "headline_metric": metrics.get("headline_metric", "iv_mae"),
         "final_val_loss": metrics.get("final_val_loss"),
         "final_test_loss": metrics.get("final_test_loss"),
         "price_pred_mid_norm_mae": price.get("pred_mid_norm_mae"),
         "price_true_mid_norm_mae": price.get("true_mid_norm_mae"),
+        "no_arb_diagnostics_mode": no_arb_metadata.get("mode"),
+        "no_arb_diagnostics_rows": no_arb_metadata.get("row_count"),
+        "no_arb_diagnostics_surfaces": no_arb_metadata.get("surface_count"),
+        "no_arb_diagnostics_sampling_unit": no_arb_metadata.get("sampling_unit"),
         "pred_calendar_violations": no_arb.get("pred_iv", {}).get("calendar", {}).get("violations"),
         "pred_convexity_violations": no_arb.get("pred_iv", {})
         .get("butterfly_convexity", {})
@@ -790,8 +941,17 @@ def _matrix_row(run_dir: Path, *, market: str, variant: str, claim_label: str) -
         "pred_put_call_pairs": no_arb.get("pred_iv", {}).get("put_call_parity", {}).get("pairs"),
     }
     for baseline, values in baselines.items():
-        row[f"baseline_{baseline}_iv_mae"] = values.get("iv_mae")
-        row[f"baseline_{baseline}_model_delta_mae"] = values.get("model_delta_mae")
+        for metric_name in (
+            "iv_mae",
+            "model_delta_mae",
+            "fit_success_rate",
+            "failure_rate",
+            "underidentified_rate",
+            "fit_failed_rate",
+            "timeout_rate",
+            "no_visible_context_rate",
+        ):
+            row[f"baseline_{baseline}_{metric_name}"] = values.get(metric_name)
     return row
 
 
@@ -874,12 +1034,17 @@ def _cmd_data_expansion(args: argparse.Namespace) -> None:
         )
     if args.max_jp_option_dates is not None:
         cfg = replace(cfg, max_jp_option_dates=args.max_jp_option_dates)
+    if args.max_workers is not None:
+        cfg = replace(cfg, max_workers=args.max_workers)
     path = write_data_expansion_report(
         start=date.fromisoformat(args.start),
         end=date.fromisoformat(args.end),
         config=cfg,
         market=args.market,
         use_bronze_cache=not args.no_bronze_cache,
+        max_workers=args.max_workers,
+        refresh_failed=args.refresh_failed,
+        refresh_all=args.refresh_all,
     )
     print(f"Wrote {path}")
 
@@ -905,6 +1070,11 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--heldout-tickers", type=str, default="")
     parser.add_argument("--mask-fraction", type=float, default=0.2)
+    parser.add_argument(
+        "--mask-regime",
+        choices=["stratified", "random", "liquidity_correlated", "block_wing"],
+        default="stratified",
+    )
     parser.add_argument("--output-dir", type=str, default="reports/runs")
     parser.add_argument("--experiment-name", type=str, default="log-iv-v1")
     parser.add_argument("--seed", type=int, default=42)
@@ -919,9 +1089,51 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--convexity-weight", type=float, default=0.5)
     parser.add_argument("--greeks-weight", type=float, default=0.0)
     parser.add_argument("--decoded-regularizer-max-terms", type=int, default=256)
+    parser.add_argument("--device", choices=["auto", "cpu", "cuda", "mps"], default="auto")
     parser.add_argument("--torch-threads", type=int, default=None)
+    parser.add_argument(
+        "--baseline-preset",
+        choices=["none", "fast", "full"],
+        default="fast",
+        help=(
+            "Post-training baseline scope. fast skips raw SVI; full includes raw SVI; "
+            "none writes model artifacts without P0 baselines."
+        ),
+    )
+    parser.add_argument(
+        "--baseline-eval-splits",
+        type=str,
+        default="val,test",
+        help=(
+            "Comma-separated prediction splits used for baseline rows; "
+            "use 'all' to disable filtering."
+        ),
+    )
+    parser.add_argument("--svi-timeout-seconds", type=float, default=1.0)
+    parser.add_argument("--svi-maxiter", type=int, default=200)
+    parser.add_argument(
+        "--no-arb-diagnostics-mode",
+        choices=["none", "sampled_surface", "full"],
+        default="sampled_surface",
+        help=(
+            "Post-training no-arbitrage diagnostics scope. sampled_surface keeps complete "
+            "surface/date graphs for a deterministic sample."
+        ),
+    )
+    parser.add_argument(
+        "--no-arb-eval-splits",
+        type=str,
+        default="val,test",
+        help="Comma-separated prediction splits for no-arb diagnostics; use 'all' for all splits.",
+    )
+    parser.add_argument("--no-arb-max-surfaces-per-split", type=int, default=100)
+    parser.add_argument("--no-arb-sample-seed", type=int, default=0)
+    parser.add_argument("--quiet-postprocess", action="store_true")
     parser.add_argument("--min-nodes-per-surface", type=int, default=3)
     parser.add_argument("--max-nodes-per-surface", type=int, default=None)
+    parser.add_argument("--no-graph-cache", dest="use_graph_cache", action="store_false")
+    parser.add_argument("--refresh-graph-cache", action="store_true")
+    parser.set_defaults(use_graph_cache=True)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1010,6 +1222,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_benchmark.add_argument("--max-us-surfaces", type=int, default=None)
     p_benchmark.add_argument("--max-jp-surfaces", type=int, default=None)
     p_benchmark.add_argument("--min-us-surfaces", type=int, default=1000)
+    p_benchmark.add_argument("--min-us-dates", type=int, default=31)
     p_benchmark.add_argument("--min-jp-dates", type=int, default=20)
     p_benchmark.add_argument(
         "--variants",
@@ -1081,7 +1294,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Comma-separated Japan codes for date-loop expansion",
     )
     p_expansion.add_argument("--max-jp-option-dates", type=int, default=None)
+    p_expansion.add_argument("--max-workers", type=int, default=None)
     p_expansion.add_argument("--no-bronze-cache", action="store_true")
+    p_expansion.add_argument("--refresh-failed", action="store_true")
+    p_expansion.add_argument("--refresh-all", action="store_true")
     p_expansion.set_defaults(func=_cmd_data_expansion)
 
     return parser

@@ -190,6 +190,8 @@ def test_masked_reconstruction_removes_target_values_from_inputs() -> None:
     assert masked_surface.input_quotes[masked_index].implied_vol is None
     assert masked_surface.input_quotes[masked_index].bid is None
     assert masked_surface.input_quotes[masked_index].ask is None
+    assert masked_surface.input_quotes[masked_index].volume == 0
+    assert masked_surface.input_quotes[masked_index].open_interest == 0
 
 
 def test_masked_metrics_use_masked_nodes_for_headline() -> None:
@@ -212,6 +214,7 @@ def test_masked_metrics_use_masked_nodes_for_headline() -> None:
 
     assert metrics["headline_metric"] == "masked_iv_mae"
     assert metrics["masked_iv_mae"] == pytest.approx(0.1)
+    assert metrics["masked_iv_p90_abs_error"] == pytest.approx(0.1)
     assert metrics["iv_mae"] == pytest.approx(0.55)
 
 
@@ -235,7 +238,69 @@ def test_train_only_baselines_do_not_use_eval_targets() -> None:
     global_row = baselines[baselines["baseline"] == "train_mean_iv_global"].iloc[0]
 
     assert global_row["iv_mae"] == pytest.approx(8.8)
-    assert set(baselines["fit_scope"]) == {"train_only"}
+    assert "train_only" in set(baselines["fit_scope"])
+    assert "eval_visible_only" in set(baselines["fit_scope"])
+
+
+def test_within_surface_baselines_use_only_visible_nodes_after_mask() -> None:
+    train_surface = [_quote(strike=100.0, expiry=date(2026, 2, 20), iv=0.2)]
+    predictions = pd.DataFrame(
+        {
+            "split": ["test", "test", "test"],
+            "surface_id": ["eval", "eval", "eval"],
+            "underlying": ["T0", "T0", "T0"],
+            "option_type": ["C", "C", "C"],
+            "expiry": ["2026-02-20", "2026-02-20", "2026-02-20"],
+            "log_moneyness": [-0.2, 0.0, 0.2],
+            "tenor_days": [30, 30, 30],
+            "tenor_years": [30 / 365.25, 30 / 365.25, 30 / 365.25],
+            "iv_true": [0.2, 9.0, 0.3],
+            "iv_pred": [0.2, 9.0, 0.3],
+            "is_masked_target": [False, True, False],
+            "input_target_visible": [True, False, True],
+        }
+    )
+
+    baselines = _train_only_baseline_summary([train_surface], predictions)
+    knn = baselines[baselines["baseline"] == "within_surface_knn_moneyness_tenor"].iloc[0]
+    svi = baselines[baselines["baseline"] == "within_surface_svi_raw_per_expiry"].iloc[0]
+
+    assert knn["visible_context_policy"] == "visible_nodes_after_mask"
+    assert bool(knn["uses_masked_quote_features"]) is False
+    assert knn["iv_mae"] == pytest.approx(8.75)
+    assert svi["underidentified_rate"] == pytest.approx(1.0)
+    assert svi["predicted_rows"] == 0
+
+
+def test_fast_baseline_preset_scopes_eval_splits_and_skips_svi() -> None:
+    train_surface = [_quote(strike=100.0, expiry=date(2026, 2, 20), iv=0.2)]
+    predictions = pd.DataFrame(
+        {
+            "split": ["val", "val", "ood_jp"],
+            "surface_id": ["eval", "eval", "jp_eval"],
+            "underlying": ["T0", "T0", "7203"],
+            "option_type": ["C", "C", "C"],
+            "expiry": ["2026-02-20", "2026-02-20", "2026-02-20"],
+            "log_moneyness": [-0.1, 0.1, 0.0],
+            "tenor_days": [30, 30, 30],
+            "tenor_years": [30 / 365.25, 30 / 365.25, 30 / 365.25],
+            "iv_true": [0.2, 0.3, 5.0],
+            "iv_pred": [0.2, 0.3, 5.0],
+            "is_masked_target": [False, True, False],
+            "input_target_visible": [True, False, True],
+        }
+    )
+
+    baselines = _train_only_baseline_summary(
+        [train_surface],
+        predictions,
+        baseline_preset="fast",
+        baseline_eval_splits=("val", "test"),
+    )
+
+    assert "within_surface_svi_raw_per_expiry" not in set(baselines["baseline"])
+    assert set(baselines["baseline_eval_splits"]) == {"val,test"}
+    assert set(baselines["eval_rows"]) == {1}
 
 
 def test_encoder_mlp_model_kind_skips_gnn() -> None:
@@ -328,6 +393,41 @@ def test_diagnostics_detect_price_and_no_arb_violations() -> None:
     assert no_arb["pred_iv"]["put_call_parity"]["pairs"] >= 1
 
 
+def test_no_arb_diagnostics_sample_complete_surfaces() -> None:
+    rows = []
+    for surface_id in ["s0", "s1", "s2"]:
+        for strike in [95.0, 100.0, 105.0]:
+            rows.append(
+                {
+                    "split": "test",
+                    "surface_id": surface_id,
+                    "underlying": "SPY",
+                    "expiry": "2026-02-20",
+                    "strike": strike,
+                    "option_type": "C",
+                    "iv_true": 0.2,
+                    "iv_pred": 0.2,
+                    "forward": 100.0,
+                    "underlying_price": 100.0,
+                    "tenor_years": 30 / 365.25,
+                }
+            )
+    predictions = pd.DataFrame(rows)
+
+    diagnostics = _no_arbitrage_diagnostics(
+        predictions,
+        mode="sampled_surface",
+        eval_splits=("test",),
+        max_surfaces_per_split=1,
+        sample_seed=123,
+    )
+
+    assert diagnostics["metadata"]["sampling_unit"] == "surface_id"
+    assert diagnostics["metadata"]["surface_count"] == 1
+    assert diagnostics["metadata"]["row_count"] == 3
+    assert diagnostics["pred_iv"]["butterfly_convexity"]["triples"] == 1
+
+
 def test_cli_exposes_matrix_and_requires_ood_data() -> None:
     parser = build_parser()
 
@@ -340,6 +440,8 @@ def test_cli_exposes_matrix_and_requires_ood_data() -> None:
             "jp.parquet",
             "--model-kind",
             "gnn",
+            "--device",
+            "cpu",
             "--log-every",
             "1",
             "--no-arb-weight",
@@ -348,6 +450,7 @@ def test_cli_exposes_matrix_and_requires_ood_data() -> None:
     )
 
     assert matrix_args.command == "experiment-matrix"
+    assert matrix_args.device == "cpu"
     assert matrix_args.log_every == 1
     assert matrix_args.no_arb_weight == 0.25
 
@@ -362,8 +465,13 @@ def test_cli_exposes_matrix_and_requires_ood_data() -> None:
             "gnn_liq,gnn_no_liq",
             "--torch-threads",
             "4",
+            "--mask-regime",
+            "liquidity_correlated",
+            "--min-us-dates",
+            "60",
             "--decoded-regularizer-max-terms",
             "32",
+            "--refresh-graph-cache",
         ]
     )
     assert benchmark_args.task == "masked_reconstruction"
@@ -371,6 +479,10 @@ def test_cli_exposes_matrix_and_requires_ood_data() -> None:
     assert benchmark_args.epochs == 100
     assert benchmark_args.variants == "gnn_liq,gnn_no_liq"
     assert benchmark_args.torch_threads == 4
+    assert benchmark_args.mask_regime == "liquidity_correlated"
+    assert benchmark_args.min_us_dates == 60
     assert benchmark_args.decoded_regularizer_max_terms == 32
+    assert benchmark_args.use_graph_cache is True
+    assert benchmark_args.refresh_graph_cache is True
     with pytest.raises(SystemExit):
         parser.parse_args(["ood-transfer"])

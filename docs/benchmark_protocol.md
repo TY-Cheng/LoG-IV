@@ -8,9 +8,7 @@ splits, baselines, leakage controls, regularizer semantics, and promotion gates.
 The credible benchmark entrypoint is:
 
 ```bash
-PYTHONPATH=src uv run python -m log_iv.cli benchmark-protocol \
-  --us-data data/silver/option_quotes/us_option_quotes_expanded.parquet \
-  --jp-data data/silver/option_quotes/jp_option_quotes_expanded.parquet
+just benchmark-a1 stratified
 ```
 
 The default protocol uses:

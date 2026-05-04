@@ -15,6 +15,7 @@ import math
 import os
 import re
 import subprocess
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -22,6 +23,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 import httpx
+import numpy as np
 import pandas as pd
 
 from log_iv.schema import OptionQuote, OptionType
@@ -34,8 +36,14 @@ DEFAULT_OPTION_FLAT_FILE_DATASET = "day_aggs_v1"
 DEFAULT_MIN_NODES_PER_SURFACE = 20
 DEFAULT_MIN_US_SURFACES = 1_000
 DEFAULT_MIN_JP_DATES = 20
+DATA_VERSION_TARGETS: dict[str, dict[str, int]] = {
+    "data_v0": {"usable_surfaces": 1_000, "usable_dates": 31},
+    "data_v1": {"usable_surfaces": 2_400, "usable_dates": 60},
+    "data_v2": {"usable_surfaces": 8_000, "usable_dates": 126},
+}
 US_INFERRED_IV_SOURCE = "option_mid_price_with_underlying_daily_close"
 US_INFERRED_IV_METHOD = "black_forward_bisection_zero_rate_zero_dividend"
+US_FLAT_BRONZE_CACHE_VERSION = 1
 _DOTENV_LOADED = False
 
 
@@ -56,6 +64,7 @@ class DataFetchConfig:
     retry_backoff_seconds: float = 1.0
     use_synthetic_fallback: bool = False
     max_jp_option_dates: int = 20
+    max_workers: int = 4
 
     @classmethod
     def from_env(cls) -> DataFetchConfig:
@@ -69,6 +78,7 @@ class DataFetchConfig:
             max_retries=_env_int("MAX_RETRIES", 2),
             retry_backoff_seconds=_env_float("RETRY_BACKOFF_SECONDS", 1.0),
             max_jp_option_dates=_env_int("JQUANTS_MAX_OPTION_DATES", 20),
+            max_workers=_env_int("DATA_EXPANSION_MAX_WORKERS", 4),
         )
 
 
@@ -376,6 +386,9 @@ def write_data_expansion_report(
     config: DataFetchConfig | None = None,
     market: str = "all",
     use_bronze_cache: bool = True,
+    max_workers: int | None = None,
+    refresh_failed: bool = False,
+    refresh_all: bool = False,
 ) -> Path:
     """Probe/write expansion manifests for U.S. flat files and JP date-loop coverage."""
 
@@ -390,7 +403,15 @@ def write_data_expansion_report(
     jp_dataset: dict[str, list[OptionQuote]] = {}
     jp_manifests: list[Path] = []
     if market in {"all", "us"}:
-        us_dataset, us_manifests = fetch_us_flat_file_option_dataset(cfg, start=start, end=end)
+        us_dataset, us_manifests = fetch_us_flat_file_option_dataset(
+            cfg,
+            start=start,
+            end=end,
+            use_bronze_cache=use_bronze_cache,
+            max_workers=max_workers,
+            refresh_failed=refresh_failed,
+            refresh_all=refresh_all,
+        )
     if market in {"all", "jp"}:
         if use_bronze_cache:
             jp_dataset, jp_manifests = load_jp_option_dataset_from_bronze(
@@ -422,6 +443,11 @@ def write_data_expansion_report(
             "us_option_quotes_expanded",
             cfg.silver_dir,
             metadata={
+                "data_stage": data_stage_from_gate(us_gate),
+                "data_stage_targets": DATA_VERSION_TARGETS,
+                "date_range": {"start": start.isoformat(), "end": end.isoformat()},
+                "ticker_count": len({ticker.upper() for ticker in cfg.us_tickers}),
+                "tickers": sorted({ticker.upper() for ticker in cfg.us_tickers}),
                 "source": "massive_options_flat_files",
                 "source_row_count": len(us_source_rows),
                 "deduplicated_row_count": len(us_rows),
@@ -439,6 +465,11 @@ def write_data_expansion_report(
             "jp_option_quotes_expanded",
             cfg.silver_dir,
             metadata={
+                "data_stage": data_stage_from_gate(jp_gate),
+                "data_stage_targets": DATA_VERSION_TARGETS,
+                "date_range": {"start": start.isoformat(), "end": end.isoformat()},
+                "ticker_count": len({ticker for ticker in cfg.jp_tickers}),
+                "tickers": sorted({ticker for ticker in cfg.jp_tickers}),
                 "source": "jquants_options_date_loop",
                 "source_row_count": len(jp_source_rows),
                 "deduplicated_row_count": len(jp_rows),
@@ -453,18 +484,30 @@ def write_data_expansion_report(
         "end": end.isoformat(),
         "market": market,
         "used_bronze_cache": use_bronze_cache,
+        "refresh_failed": refresh_failed,
+        "refresh_all": refresh_all,
+        "max_workers": max_workers if max_workers is not None else cfg.max_workers,
         "ok": bool((market == "jp" or us_gate["ok"]) and (market == "us" or jp_gate["ok"])),
         "action": _data_expansion_action(market, bool(us_gate["ok"]), bool(jp_gate["ok"])),
+        "data_stage_targets": DATA_VERSION_TARGETS,
         "expanded_silver_tables": {
             "us": str(us_silver) if us_silver is not None else None,
             "jp": str(jp_silver) if jp_silver is not None else None,
         },
         "us_flat": {
+            "data_stage": data_stage_from_gate(us_gate),
+            "date_range": {"start": start.isoformat(), "end": end.isoformat()},
+            "ticker_count": len({ticker.upper() for ticker in cfg.us_tickers}),
+            "tickers": sorted({ticker.upper() for ticker in cfg.us_tickers}),
             "surface_count": len(us_dataset),
             "source_row_count": len(us_source_rows),
             "deduplicated_row_count": len(us_rows),
             "manifest_count": len(us_manifests),
             "manifests": [str(path) for path in us_manifests],
+            "max_workers": max_workers if max_workers is not None else cfg.max_workers,
+            "used_bronze_cache": use_bronze_cache,
+            "refresh_failed": refresh_failed,
+            "refresh_all": refresh_all,
             "iv_source": US_INFERRED_IV_SOURCE,
             "iv_method": US_INFERRED_IV_METHOD,
             "surface_gate": us_gate,
@@ -473,6 +516,10 @@ def write_data_expansion_report(
             ),
         },
         "jp_date_loop": {
+            "data_stage": data_stage_from_gate(jp_gate),
+            "date_range": {"start": start.isoformat(), "end": end.isoformat()},
+            "ticker_count": len({ticker for ticker in cfg.jp_tickers}),
+            "tickers": sorted({ticker for ticker in cfg.jp_tickers}),
             "surface_count": len(jp_dataset),
             "source_row_count": len(jp_source_rows),
             "deduplicated_row_count": len(jp_rows),
@@ -548,6 +595,13 @@ def fetch_us_option_dataset(
     return dataset, manifests
 
 
+@dataclass(frozen=True)
+class _USFlatDateResult:
+    observation_date: date
+    dataset: dict[str, list[OptionQuote]]
+    manifest: Path
+
+
 def fetch_us_flat_file_option_dataset(
     config: DataFetchConfig | None = None,
     *,
@@ -555,11 +609,15 @@ def fetch_us_flat_file_option_dataset(
     end: date | None = None,
     path_template: str | None = None,
     underlying_path_template: str | None = None,
+    use_bronze_cache: bool = True,
+    max_workers: int | None = None,
+    refresh_failed: bool = False,
+    refresh_all: bool = False,
 ) -> tuple[dict[str, list[OptionQuote]], list[Path]]:
     """Ingest Massive/Polygon daily historical option flat files via a path template.
 
     The template is credential-safe and may point at a local file, ``file://`` URL,
-    or HTTPS URL. It can contain ``{date}`` and ``{yyyymmdd}`` placeholders.
+    HTTPS URL, or S3 URL. It can contain ``{date}`` and ``{yyyymmdd}`` placeholders.
     """
 
     cfg = config or DataFetchConfig.from_env()
@@ -585,65 +643,323 @@ def fetch_us_flat_file_option_dataset(
         return dataset, manifests
 
     tickers = {ticker.upper() for ticker in cfg.us_tickers}
-    for obs_date in _bounded_business_dates(start, end, 10_000):
-        source_path = _format_flat_file_template(template, obs_date)
-        try:
-            rows = _read_flat_file_rows(source_path)
-            quotes = massive_flat_rows_to_option_quotes(rows, obs_date, tickers)
-            valid = [quote for quote in quotes if _has_valid_bid_ask(quote)]
-            underlying_error = None
-            underlying_prices: dict[str, float] = {}
-            if underlying_template:
+    dates = _bounded_business_dates(start, end, 10_000)
+    worker_count = max(1, int(max_workers if max_workers is not None else cfg.max_workers))
+    results: list[_USFlatDateResult] = []
+    if worker_count == 1 or len(dates) <= 1:
+        for obs_date in dates:
+            results.append(
+                _fetch_us_flat_file_date(
+                    cfg,
+                    obs_date,
+                    template,
+                    underlying_template,
+                    tickers,
+                    use_bronze_cache=use_bronze_cache,
+                    refresh_failed=refresh_failed,
+                    refresh_all=refresh_all,
+                )
+            )
+    else:
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            futures = {
+                executor.submit(
+                    _fetch_us_flat_file_date,
+                    cfg,
+                    obs_date,
+                    template,
+                    underlying_template,
+                    tickers,
+                    use_bronze_cache=use_bronze_cache,
+                    refresh_failed=refresh_failed,
+                    refresh_all=refresh_all,
+                ): obs_date
+                for obs_date in dates
+            }
+            for future in as_completed(futures):
+                obs_date = futures[future]
                 try:
-                    underlying_prices = fetch_us_underlying_flat_file_prices(
-                        obs_date,
-                        tickers=tickers,
-                        path_template=underlying_template,
-                    )
+                    results.append(future.result())
                 except Exception as exc:
-                    underlying_error = _redact_error(exc)
-            valid = infer_implied_vols_from_option_prices(valid, underlying_prices)
-            iv_inferred_count = sum(1 for quote in valid if quote.implied_vol is not None)
-            for ticker, group in _quotes_by_underlying(valid).items():
-                dataset[f"US_FLAT_{ticker}_{obs_date.isoformat()}"] = group
-            manifest_payload = {
-                "ok": True,
+                    source_path = _format_flat_file_template(template, obs_date)
+                    manifests.append(
+                        write_bronze_manifest(
+                            cfg.bronze_dir,
+                            "massive",
+                            "flat_options",
+                            {
+                                "ok": False,
+                                "complete": False,
+                                "date": obs_date.isoformat(),
+                                "path": source_path,
+                                "source_path": source_path,
+                                "tickers": sorted(tickers),
+                                "tickers_hash": _tickers_hash(tickers),
+                                "message": _redact_error(exc),
+                            },
+                        )
+                    )
+
+    for result in sorted(results, key=lambda item: item.observation_date):
+        manifests.append(result.manifest)
+        dataset.update(result.dataset)
+    return dataset, manifests
+
+
+def _fetch_us_flat_file_date(
+    cfg: DataFetchConfig,
+    obs_date: date,
+    template: str,
+    underlying_template: str | None,
+    tickers: set[str],
+    *,
+    use_bronze_cache: bool,
+    refresh_failed: bool,
+    refresh_all: bool,
+) -> _USFlatDateResult:
+    source_path = _format_flat_file_template(template, obs_date)
+    tickers_hash = _tickers_hash(tickers)
+    if use_bronze_cache and not refresh_all:
+        cached = _load_us_flat_cache_payload(
+            cfg,
+            obs_date=obs_date,
+            source_path=source_path,
+            tickers_hash=tickers_hash,
+            refresh_failed=refresh_failed,
+        )
+        if cached is not None:
+            quotes, manifest_path = cached
+            return _USFlatDateResult(
+                observation_date=obs_date,
+                dataset=_us_flat_dataset_for_date(quotes, obs_date),
+                manifest=manifest_path,
+            )
+
+    try:
+        rows = _read_flat_file_rows(source_path)
+        quotes = massive_flat_rows_to_option_quotes(rows, obs_date, tickers)
+        valid = [quote for quote in quotes if _has_valid_bid_ask(quote)]
+        underlying_error = None
+        underlying_prices: dict[str, float] = {}
+        underlying_path = None
+        if underlying_template:
+            underlying_path = _format_flat_file_template(underlying_template, obs_date)
+            try:
+                underlying_prices = fetch_us_underlying_flat_file_prices(
+                    obs_date,
+                    tickers=tickers,
+                    path_template=underlying_template,
+                )
+            except Exception as exc:
+                underlying_error = _redact_error(exc)
+        valid = infer_implied_vols_from_option_prices(valid, underlying_prices)
+        iv_inferred_count = sum(1 for quote in valid if quote.implied_vol is not None)
+        payload_path = _us_flat_payload_path(cfg, obs_date, tickers_hash)
+        _write_us_flat_payload(payload_path, valid)
+        manifest_payload = {
+            "ok": True,
+            "complete": True,
+            "cache_version": US_FLAT_BRONZE_CACHE_VERSION,
+            "cache_hit": False,
+            "date": obs_date.isoformat(),
+            "path": source_path,
+            "source_path": source_path,
+            "underlying_path": underlying_path,
+            "payload_path": str(payload_path),
+            "payload_row_count": len(valid),
+            "payload_schema_fingerprint": table_schema_fingerprint(payload_path),
+            "row_count": len(rows),
+            "usable_row_count": len(valid),
+            "underlying_price_count": len(underlying_prices),
+            "iv_inferred_row_count": iv_inferred_count,
+            "iv_missing_row_count": len(valid) - iv_inferred_count,
+            "schema_fingerprint": schema_fingerprint(rows),
+            "tickers": sorted(tickers),
+            "ticker_count": len(tickers),
+            "tickers_hash": tickers_hash,
+            "iv_source": US_INFERRED_IV_SOURCE,
+            "iv_method": US_INFERRED_IV_METHOD,
+        }
+        if underlying_error:
+            manifest_payload["underlying_price_message"] = underlying_error
+        manifest = write_bronze_manifest(
+            cfg.bronze_dir,
+            "massive",
+            "flat_options",
+            manifest_payload,
+        )
+        return _USFlatDateResult(
+            observation_date=obs_date,
+            dataset=_us_flat_dataset_for_date(valid, obs_date),
+            manifest=manifest,
+        )
+    except Exception as exc:
+        manifest = write_bronze_manifest(
+            cfg.bronze_dir,
+            "massive",
+            "flat_options",
+            {
+                "ok": False,
+                "complete": False,
+                "cache_version": US_FLAT_BRONZE_CACHE_VERSION,
                 "date": obs_date.isoformat(),
                 "path": source_path,
-                "row_count": len(rows),
-                "usable_row_count": len(valid),
-                "underlying_price_count": len(underlying_prices),
-                "iv_inferred_row_count": iv_inferred_count,
-                "iv_missing_row_count": len(valid) - iv_inferred_count,
-                "schema_fingerprint": schema_fingerprint(rows),
-                "iv_source": US_INFERRED_IV_SOURCE,
-                "iv_method": US_INFERRED_IV_METHOD,
-            }
-            if underlying_error:
-                manifest_payload["underlying_price_message"] = underlying_error
-            manifests.append(
-                write_bronze_manifest(
-                    cfg.bronze_dir,
-                    "massive",
-                    "flat_options",
-                    manifest_payload,
-                )
-            )
-        except Exception as exc:
-            manifests.append(
-                write_bronze_manifest(
-                    cfg.bronze_dir,
-                    "massive",
-                    "flat_options",
-                    {
-                        "ok": False,
-                        "date": obs_date.isoformat(),
-                        "path": source_path,
-                        "message": _redact_error(exc),
-                    },
-                )
-            )
-    return dataset, manifests
+                "source_path": source_path,
+                "tickers": sorted(tickers),
+                "ticker_count": len(tickers),
+                "tickers_hash": tickers_hash,
+                "message": _redact_error(exc),
+            },
+        )
+        return _USFlatDateResult(observation_date=obs_date, dataset={}, manifest=manifest)
+
+
+def _us_flat_dataset_for_date(
+    quotes: list[OptionQuote],
+    obs_date: date,
+) -> dict[str, list[OptionQuote]]:
+    dataset: dict[str, list[OptionQuote]] = {}
+    for ticker, group in _quotes_by_underlying(quotes).items():
+        dataset[f"US_FLAT_{ticker}_{obs_date.isoformat()}"] = group
+    return dataset
+
+
+def _load_us_flat_cache_payload(
+    cfg: DataFetchConfig,
+    *,
+    obs_date: date,
+    source_path: str,
+    tickers_hash: str,
+    refresh_failed: bool,
+) -> tuple[list[OptionQuote], Path] | None:
+    latest = _latest_us_flat_cache_manifest(
+        cfg,
+        obs_date=obs_date,
+        source_path=source_path,
+        tickers_hash=tickers_hash,
+    )
+    if latest is None:
+        return None
+    manifest_path, manifest_payload = latest
+    if manifest_payload.get("ok") is not True:
+        return None
+    if refresh_failed and manifest_payload.get("complete") is not True:
+        return None
+    return _validate_and_load_us_flat_cache_manifest(manifest_path, manifest_payload)
+
+
+def _latest_us_flat_cache_manifest(
+    cfg: DataFetchConfig,
+    *,
+    obs_date: date,
+    source_path: str,
+    tickers_hash: str,
+) -> tuple[Path, dict[str, Any]] | None:
+    manifest_dir = cfg.bronze_dir / "massive" / "flat_options"
+    candidates: list[tuple[Path, dict[str, Any]]] = []
+    for path in manifest_dir.glob("manifest_*.json"):
+        try:
+            payload = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        if payload.get("date") != obs_date.isoformat():
+            continue
+        if payload.get("source_path", payload.get("path")) != source_path:
+            continue
+        if payload.get("tickers_hash") != tickers_hash:
+            continue
+        if payload.get("cache_version") != US_FLAT_BRONZE_CACHE_VERSION:
+            continue
+        candidates.append((path, payload))
+    if not candidates:
+        return None
+    return sorted(candidates, key=lambda item: item[0].name)[-1]
+
+
+def _validate_and_load_us_flat_cache_manifest(
+    manifest_path: Path,
+    manifest_payload: dict[str, Any],
+) -> tuple[list[OptionQuote], Path] | None:
+    if manifest_payload.get("ok") is not True or manifest_payload.get("complete") is not True:
+        return None
+    if not isinstance(manifest_payload.get("row_count"), int):
+        return None
+    if not isinstance(manifest_payload.get("usable_row_count"), int):
+        return None
+    if not isinstance(manifest_payload.get("payload_row_count"), int):
+        return None
+    if not isinstance(manifest_payload.get("schema_fingerprint"), str):
+        return None
+    expected_payload_fingerprint = manifest_payload.get("payload_schema_fingerprint")
+    if not isinstance(expected_payload_fingerprint, str):
+        return None
+    payload_path_value = manifest_payload.get("payload_path")
+    if not isinstance(payload_path_value, str) or not payload_path_value:
+        return None
+    payload_path = Path(payload_path_value)
+    if not payload_path.is_file():
+        return None
+    try:
+        frame = pd.read_parquet(payload_path)
+    except Exception:
+        return None
+    if len(frame) != manifest_payload["payload_row_count"]:
+        return None
+    if len(frame) != manifest_payload["usable_row_count"]:
+        return None
+    if _frame_schema_fingerprint(frame) != expected_payload_fingerprint:
+        return None
+    quotes = _option_quotes_from_frame(frame)
+    if len(quotes) != len(frame):
+        return None
+    return quotes, manifest_path
+
+
+def _write_us_flat_payload(path: Path, quotes: list[OptionQuote]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rows = [quote.model_dump(mode="json") for quote in quotes]
+    frame = pd.DataFrame(rows, columns=list(OptionQuote.model_fields))
+    tmp_path = path.with_name(f"{path.stem}.{os.getpid()}.tmp{path.suffix}")
+    frame.to_parquet(tmp_path, index=False)
+    tmp_path.replace(path)
+
+
+def _option_quotes_from_frame(frame: pd.DataFrame) -> list[OptionQuote]:
+    quotes: list[OptionQuote] = []
+    normalized = frame.replace({np.nan: None})
+    for row in normalized.to_dict(orient="records"):
+        try:
+            quotes.append(OptionQuote.model_validate(_clean_parquet_record(row)))
+        except ValueError:
+            continue
+    return quotes
+
+
+def _clean_parquet_record(row: dict[str, Any]) -> dict[str, Any]:
+    cleaned: dict[str, Any] = {}
+    for key, value in row.items():
+        if value is pd.NaT:
+            cleaned[key] = None
+            continue
+        if isinstance(value, float) and math.isnan(value):
+            cleaned[key] = None
+            continue
+        cleaned[key] = value
+    return cleaned
+
+
+def _us_flat_payload_path(cfg: DataFetchConfig, obs_date: date, tickers_hash: str) -> Path:
+    return (
+        cfg.bronze_dir
+        / "massive"
+        / "flat_options"
+        / f"payload_{obs_date.isoformat()}_{tickers_hash}.parquet"
+    )
+
+
+def _tickers_hash(tickers: set[str]) -> str:
+    payload = json.dumps(sorted(tickers), separators=(",", ":"))
+    return hashlib.sha256(payload.encode()).hexdigest()[:16]
 
 
 def massive_flat_rows_to_option_quotes(
@@ -1350,6 +1666,10 @@ def write_bronze_manifest(
     manifest_dir = bronze_dir / source / kind
     manifest_dir.mkdir(parents=True, exist_ok=True)
     path = manifest_dir / f"manifest_{stamp}.json"
+    index = 1
+    while path.exists():
+        path = manifest_dir / f"manifest_{stamp}_{index}.json"
+        index += 1
     _write_json(path, payload)
     return path
 
@@ -1389,6 +1709,7 @@ def option_surface_gate_summary(
     surface_sizes: dict[tuple[str, date], int] = {}
     usable_sizes: dict[tuple[str, date], int] = {}
     dates = sorted({quote.observation_date for quote in quotes})
+    underlyings = sorted({quote.underlying for quote in quotes})
     for quote in quotes:
         surface_key = (quote.underlying, quote.observation_date)
         surface_sizes[surface_key] = surface_sizes.get(surface_key, 0) + 1
@@ -1408,6 +1729,8 @@ def option_surface_gate_summary(
         and len(usable_dates) >= min_observation_dates,
         "row_count": len(quotes),
         "iv_usable_row_count": sum(1 for quote in quotes if _is_iv_usable_quote(quote)),
+        "underlying_count": len(underlyings),
+        "underlyings": underlyings,
         "surface_count": len(surface_sizes),
         "usable_surface_count": len(usable_surface_sizes),
         "distinct_observation_date_count": len(dates),
@@ -1418,14 +1741,36 @@ def option_surface_gate_summary(
         "min_required_surfaces": min_surfaces,
         "min_required_observation_dates": min_observation_dates,
         "surface_size_min": min(surface_sizes.values()) if surface_sizes else 0,
+        "surface_size_p50": (
+            float(np.median(list(surface_sizes.values()))) if surface_sizes else 0.0
+        ),
         "surface_size_max": max(surface_sizes.values()) if surface_sizes else 0,
         "usable_surface_size_min": min(usable_surface_sizes) if usable_surface_sizes else 0,
+        "usable_surface_size_p50": float(np.median(usable_surface_sizes))
+        if usable_surface_sizes
+        else 0.0,
         "usable_surface_size_max": max(usable_surface_sizes) if usable_surface_sizes else 0,
     }
 
 
+def data_stage_from_gate(gate: dict[str, Any]) -> str:
+    """Classify an expanded silver panel against the data-first benchmark ladder."""
+
+    usable_surfaces = int(gate.get("usable_surface_count", 0))
+    usable_dates = int(gate.get("distinct_usable_observation_date_count", 0))
+    stage = "under_gate"
+    for name, target in DATA_VERSION_TARGETS.items():
+        if usable_surfaces >= target["usable_surfaces"] and usable_dates >= target["usable_dates"]:
+            stage = name
+    return stage
+
+
 def table_schema_fingerprint(path: Path) -> str:
     df = pd.read_parquet(path)
+    return _frame_schema_fingerprint(df)
+
+
+def _frame_schema_fingerprint(df: pd.DataFrame) -> str:
     payload = json.dumps([(str(col), str(dtype)) for col, dtype in df.dtypes.items()])
     return hashlib.sha256(payload.encode()).hexdigest()[:16]
 

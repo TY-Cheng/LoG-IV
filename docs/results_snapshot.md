@@ -6,13 +6,14 @@ benchmark-stage run, not paper evidence**.
 No result below is a `paper_candidate`. The current runs are useful because they
 exercise real data, model controls, baseline summaries, and post-run diagnostics.
 They are still too short, single-seed, and missing the full strong-baseline
-ladder required for LoG claims.
+ladder required for LoG claims. Short pipeline-check runs are intentionally
+excluded from this page so it can serve as a reporting-oriented result ledger.
 
 ## Snapshot On 2026-05-01
 
 Implemented:
 
-- `engineering_smoke`: `just check` passes with all extras, including `torch`
+- `engineering_gate`: `just check` passes with all extras, including `torch`
   and `torch-geometric`.
 - `real_us_mvp`: U.S. silver table has 980 rows over 5 tickers. With
   `min_nodes_per_surface=3`, 31 of 70 `(underlying, date)` surfaces survive.
@@ -21,9 +22,6 @@ Implemented:
 - `real_us_mvp` / `japan_ood_probe`: first 20-epoch matrix writes full
   validation/test predictions, baseline summaries, normalized price diagnostics,
   and no-arbitrage diagnostics under `reports/runs/`.
-- `japan_ood_probe`: U.S. to Japan zero-shot smoke writes an `ood_jp` split under
-  `reports/runs/us_to_jp_ood_smoke_20e_seed42/`.
-
 Blocked or incomplete:
 
 - IV inversion and rate/dividend handling;
@@ -88,30 +86,6 @@ Current gate status:
   default.
 - Japan expanded gate: pass, 31 usable observation dates against the 20-date
   default.
-
-## Benchmark Protocol Smoke On 2026-05-03
-
-This smoke used the credible protocol path with `task=masked_reconstruction`,
-`split_mode=temporal`, `seed=1`, `epochs=1`, `max_us_surfaces=1000`,
-`max_jp_surfaces=100`, and `max_nodes_per_surface=64`. It is a pipeline check,
-not a model-performance claim.
-
-| Variant | Masked IV MAE | Train kNN MAE | Delta vs kNN | Claim label |
-| --- | ---: | ---: | ---: | --- |
-| `encoder_mlp` | 0.1981 | 0.1137 | 0.0844 | `real_us_mvp` |
-| `gnn_no_liq` | 0.1585 | 0.1137 | 0.0448 | `real_us_mvp` |
-| `gnn_liq` | 0.1756 | 0.1137 | 0.0619 | `real_us_mvp` |
-| `gnn_decoded_calendar_convexity` | 0.1478 | 0.1137 | 0.0341 | `real_us_mvp` |
-
-Interpretation:
-
-- The benchmark acceptance gate now passes in the expanded data path.
-- The run writes fixed temporal split artifacts, masked-node headline metrics,
-  train-only baseline summaries, diagnostic leave-one-out baselines, decoded
-  price diagnostics, and no-arbitrage diagnostics.
-- A 1-epoch smoke does not beat the train-only moneyness-tenor kNN baseline.
-  This is expected to remain diagnostic until a multi-seed, longer training
-  run is completed.
 
 ## Benchmark Stage1 On 2026-05-03
 
@@ -183,21 +157,6 @@ Interpretation:
 - Japan single-date reconstruction is easy for the encoder MLP and still only a
   coverage/OOD probe. It is not transfer evidence.
 - Convexity diagnostics remain frequent, so no no-arbitrage claim is supported.
-
-## U.S. To Japan OOD Smoke
-
-Run: `reports/runs/us_to_jp_ood_smoke_20e_seed42/`.
-
-| Split | IV MAE |
-| --- | ---: |
-| U.S. validation | 0.2660 |
-| U.S. test | 0.2398 |
-| Japan OOD | 0.5103 |
-
-Interpretation: the zero-shot U.S. to Japan model degrades sharply on Japan.
-This is useful domain-shift evidence, but it is a negative/diagnostic result.
-It should motivate data alignment, IV/price normalization, and market-specific
-coverage checks before any transfer claim.
 
 ## Evidence Gate
 

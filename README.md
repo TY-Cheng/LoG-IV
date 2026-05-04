@@ -110,17 +110,9 @@ To reproduce the first matrix and OOD smoke, use the CLI commands recorded in
 The credible benchmark entrypoint is:
 
 ```bash
-US_TICKERS=SPY,QQQ,IWM,DIA,AAPL,MSFT,NVDA,AMZN,GOOGL,GOOG,META,TSLA,AMD,NFLX,AVGO,JPM,BAC,XOM,CVX,UNH,JNJ,LLY,V,MA,COST,WMT,HD,PG,KO,PEP,DIS,ORCL,CRM,INTC,CSCO,IBM,GE,BA,F,T
-
-PYTHONPATH=src uv run python -m log_iv.cli data-expansion \
-  --market us --start 2026-02-02 --end 2026-04-30 --tickers "$US_TICKERS"
-
-PYTHONPATH=src uv run python -m log_iv.cli data-expansion \
-  --market jp --start 2026-03-16 --end 2026-04-30 --max-jp-option-dates 35
-
-PYTHONPATH=src uv run python -m log_iv.cli benchmark-protocol \
-  --us-data data/silver/option_quotes/us_option_quotes_expanded.parquet \
-  --jp-data data/silver/option_quotes/jp_option_quotes_expanded.parquet
+just data-v1-us
+just data-jp
+just benchmark-a1 stratified
 ```
 
 By default it requires masked reconstruction, temporal splits, three seeds, and

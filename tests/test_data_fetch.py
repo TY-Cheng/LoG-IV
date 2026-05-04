@@ -130,6 +130,84 @@ def test_us_flat_file_ingestion_writes_per_date_manifest(tmp_path: Path) -> None
 
     assert len(dataset) == 1
     assert manifests
+    manifest = json.loads(manifests[0].read_text())
+    payload_path = Path(manifest["payload_path"])
+    assert manifest["complete"]
+    assert manifest["row_count"] == 1
+    assert manifest["usable_row_count"] == 1
+    assert payload_path.is_file()
+
+
+def test_us_flat_file_ingestion_reuses_bronze_payload_cache(tmp_path: Path) -> None:
+    flat_path = tmp_path / "options_20260430.csv"
+    flat_path.write_text(
+        "\n".join(
+            [
+                "contract_symbol,expiration_date,strike_price,contract_type,bid,ask,implied_volatility",
+                "O:SPY260619C00500000,2026-06-19,500,call,3.1,3.4,0.22",
+            ]
+        )
+    )
+    cfg = DataFetchConfig(
+        bronze_dir=tmp_path / "bronze",
+        silver_dir=tmp_path / "silver",
+        gold_dir=tmp_path / "gold",
+        reports_dir=tmp_path / "reports",
+        us_tickers=["SPY"],
+    )
+
+    first_dataset, first_manifests = fetch_us_flat_file_option_dataset(
+        cfg,
+        start=date(2026, 4, 30),
+        end=date(2026, 4, 30),
+        path_template=str(flat_path),
+    )
+
+    with patch(
+        "log_iv.data_fetch._read_flat_file_rows",
+        side_effect=AssertionError("cache hit should not re-read the flat file"),
+    ):
+        second_dataset, second_manifests = fetch_us_flat_file_option_dataset(
+            cfg,
+            start=date(2026, 4, 30),
+            end=date(2026, 4, 30),
+            path_template=str(flat_path),
+        )
+
+    assert second_manifests == first_manifests
+    assert len(second_dataset["US_FLAT_SPY_2026-04-30"]) == len(
+        first_dataset["US_FLAT_SPY_2026-04-30"]
+    )
+
+
+def test_us_flat_file_ingestion_runs_per_date_workers(tmp_path: Path) -> None:
+    for day in ("2026-04-29", "2026-04-30"):
+        (tmp_path / f"options_{day}.csv").write_text(
+            "\n".join(
+                [
+                    "contract_symbol,expiration_date,strike_price,contract_type,bid,ask,implied_volatility",
+                    "O:SPY260619C00500000,2026-06-19,500,call,3.1,3.4,0.22",
+                ]
+            )
+        )
+    cfg = DataFetchConfig(
+        bronze_dir=tmp_path / "bronze",
+        silver_dir=tmp_path / "silver",
+        gold_dir=tmp_path / "gold",
+        reports_dir=tmp_path / "reports",
+        us_tickers=["SPY"],
+    )
+
+    dataset, manifests = fetch_us_flat_file_option_dataset(
+        cfg,
+        start=date(2026, 4, 29),
+        end=date(2026, 4, 30),
+        path_template=str(tmp_path / "options_{date}.csv"),
+        max_workers=2,
+    )
+
+    assert len(manifests) == 2
+    assert sorted(dataset) == ["US_FLAT_SPY_2026-04-29", "US_FLAT_SPY_2026-04-30"]
 
 
 def test_us_flat_file_ingestion_infers_iv_from_underlying_close(tmp_path: Path) -> None:
@@ -250,7 +328,12 @@ def test_data_expansion_writes_deduped_expanded_silver_and_gate(
     assert len(pd.read_parquet(jp_table)) == 400
     us_manifest = json.loads(us_table.with_suffix(".manifest.json").read_text())
     assert us_manifest["iv_source"] == "option_mid_price_with_underlying_daily_close"
+    assert us_manifest["date_range"] == {"start": "2026-04-01", "end": "2026-04-30"}
+    assert us_manifest["ticker_count"] == len(set(cfg.us_tickers))
+    assert us_manifest["surface_gate"]["surface_size_p50"] == 20.0
+    assert us_manifest["surface_gate"]["usable_surface_size_p50"] == 20.0
     assert report["us_flat"]["iv_method"] == "black_forward_bisection_zero_rate_zero_dividend"
+    assert report["data_stage_targets"]["data_v1"]["usable_surfaces"] == 2400
     assert report["us_flat"]["surface_gate"]["usable_surface_count"] == 1
     assert report["jp_date_loop"]["surface_gate"]["distinct_usable_observation_date_count"] == 20
 

@@ -90,6 +90,11 @@ data/gold/     modeling-ready graph batches and task tables
 reports/       local reports, figures, model diagnostics, and run manifests
 ```
 
+Benchmark graph caches live under `data/gold/graph_cache/`. They are keyed by
+the source silver table fingerprint plus graph-loading controls such as
+`min_nodes_per_surface`, `max_nodes_per_surface`, and `max_surfaces`; use
+`--refresh-graph-cache` when intentionally rebuilding them.
+
 The contents of these directories are ignored by git except for `.gitkeep`
 placeholders.
 
@@ -201,15 +206,12 @@ surfaces, and surface-size min/p50/max in each expanded silver manifest.
 Use the same 40-ticker universe before expanding to a larger cross-section:
 
 ```bash
-US_TICKERS="AAPL,AMD,AMZN,AVGO,BA,BAC,COST,CRM,CSCO,CVX,DIA,DIS,F,GE,GOOG,GOOGL,HD,IBM,INTC,IWM,JNJ,JPM,KO,LLY,MA,META,MSFT,NFLX,NVDA,ORCL,PEP,PG,QQQ,SPY,T,TSLA,UNH,V,WMT,XOM"
-
-PYTHONPATH=src uv run python -m log_iv.cli data-expansion \
-  --market us --start 2026-02-02 --end 2026-04-30 --tickers "$US_TICKERS"
+just data-v1-us
 ```
 
-Run through the repo environment contract so `UV_PROJECT_ENVIRONMENT` points to
-`${HOME}/.venvs/log-iv`; do not create a repo-local `.venv` for benchmark data
-work.
+Run through `just` so the repo `.env` is loaded and `UV_PROJECT_ENVIRONMENT`
+points to `${HOME}/.venvs/log-iv`; do not run bare `uv run ...` for benchmark
+data work.
 
 The current expanded Japan table is:
 

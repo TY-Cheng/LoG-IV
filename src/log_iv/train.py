@@ -22,7 +22,10 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import signal
+import threading
 import time
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -90,6 +93,11 @@ class TrainingConfig:
     heldout_tickers: tuple[str, ...] = ()
     task_mode: str = "observed_reconstruction"
     mask_fraction: float = 0.2
+    mask_regime: str = "stratified"
+    target_space: str = "iv"
+    query_node_feature_policy: str = "contract_time_geometry_only"
+    visible_context_policy: str = "visible_nodes_after_mask"
+    normalizer_scope: str = "train_or_visible_only"
     synthetic_surfaces: int = 8
     synthetic_underlyings: int = 2
     synthetic_maturities: int = 5
@@ -104,6 +112,17 @@ class TrainingConfig:
 
     # Hardware
     device: str = "auto"
+
+    # Post-processing / baseline artifacts
+    baseline_preset: str = "full"
+    baseline_eval_splits: tuple[str, ...] = ("val", "test")
+    svi_timeout_seconds: float = 1.0
+    svi_maxiter: int = 200
+    postprocess_verbose: bool = True
+    no_arb_diagnostics_mode: str = "sampled_surface"
+    no_arb_eval_splits: tuple[str, ...] = ("val", "test")
+    no_arb_max_surfaces_per_split: int = 100
+    no_arb_sample_seed: int = 0
 
 
 @dataclass
@@ -861,7 +880,15 @@ def _prepare_surface_for_task(
         return quotes
     mask = _deterministic_surface_mask(quotes, config, surface_id, split)
     input_quotes = [
-        quote.model_copy(update={"bid": None, "ask": None, "implied_vol": None})
+        quote.model_copy(
+            update={
+                "bid": None,
+                "ask": None,
+                "implied_vol": None,
+                "volume": 0,
+                "open_interest": 0,
+            }
+        )
         if is_masked
         else quote
         for quote, is_masked in zip(quotes, mask, strict=True)
@@ -884,20 +911,60 @@ def _deterministic_surface_mask(
     if not candidates:
         return [False] * len(quotes)
     target_count = max(1, int(round(len(candidates) * config.mask_fraction)))
+    regime = config.mask_regime
+    if regime == "random":
+        selected = sorted(
+            candidates,
+            key=lambda idx: _stable_score(config.seed, surface_id, split, "random", quotes[idx]),
+        )[:target_count]
+        mask = [False] * len(quotes)
+        for index in selected:
+            mask[index] = True
+        return mask
+    if regime == "liquidity_correlated":
+        selected = sorted(
+            candidates,
+            key=lambda idx: (
+                quotes[idx].volume + quotes[idx].open_interest,
+                _stable_score(config.seed, surface_id, split, "liquidity_correlated", quotes[idx]),
+            ),
+        )[:target_count]
+        mask = [False] * len(quotes)
+        for index in selected:
+            mask[index] = True
+        return mask
+    if regime == "block_wing":
+        selected = sorted(
+            candidates,
+            key=lambda idx: (
+                -abs(float(quotes[idx].log_moneyness or 0.0)),
+                _stable_score(config.seed, surface_id, split, "block_wing", quotes[idx]),
+            ),
+        )[:target_count]
+        mask = [False] * len(quotes)
+        for index in selected:
+            mask[index] = True
+        return mask
+    if regime != "stratified":
+        msg = (
+            "mask_regime must be one of stratified/random/liquidity_correlated/block_wing; "
+            f"got {regime!r}"
+        )
+        raise ValueError(msg)
     bucketed: dict[str, list[int]] = {}
     for index in candidates:
         bucketed.setdefault(_mask_bucket(quotes[index], quotes), []).append(index)
-    selected: list[int] = []
+    stratified_selected: list[int] = []
     for bucket, indices in bucketed.items():
         quota = max(1, int(round(len(indices) * config.mask_fraction)))
-        selected.extend(
+        stratified_selected.extend(
             sorted(
                 indices,
                 key=lambda idx: _stable_score(config.seed, surface_id, split, bucket, quotes[idx]),
             )[:quota]
         )
     selected = sorted(
-        set(selected),
+        set(stratified_selected),
         key=lambda idx: _stable_score(config.seed, surface_id, split, "final", quotes[idx]),
     )[:target_count]
     mask = [False] * len(quotes)
@@ -975,6 +1042,12 @@ def train(
     if cfg.device == "auto":
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     else:
+        if cfg.device == "mps" and not torch.backends.mps.is_available():
+            msg = "MPS device requested but torch.backends.mps.is_available() is false"
+            raise RuntimeError(msg)
+        if cfg.device == "cuda" and not torch.cuda.is_available():
+            msg = "CUDA device requested but torch.cuda.is_available() is false"
+            raise RuntimeError(msg)
         device = torch.device(cfg.device)
 
     # Seed
@@ -1310,6 +1383,12 @@ def _write_epoch_jsonl(path: Path, metrics: list[TrainingMetrics]) -> None:
             handle.write(json.dumps(_metrics_to_dict(metric), sort_keys=True) + "\n")
 
 
+def _format_split_scope(splits: tuple[str, ...] | list[str] | None) -> str:
+    if not splits:
+        return "all"
+    return ",".join(str(split) for split in splits)
+
+
 @torch.no_grad()
 def _prediction_frame(
     model: OptionTokenGNN,
@@ -1392,10 +1471,30 @@ def _write_run_artifacts(
     split_manifest: dict[str, Any] | None = None,
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
+    postprocess_started = time.monotonic()
+    postprocess_timings: list[dict[str, Any]] = []
+
+    def log_postprocess(message: str) -> None:
+        if config.postprocess_verbose:
+            elapsed = time.monotonic() - postprocess_started
+            print(f"[postprocess {run_label} +{elapsed:.1f}s] {message}", flush=True)
+
+    def start_stage(name: str, detail: str) -> float:
+        log_postprocess(f"{name}: {detail}")
+        return time.monotonic()
+
+    def finish_stage(name: str, started_at: float, detail: str = "done") -> None:
+        elapsed = time.monotonic() - started_at
+        postprocess_timings.append(
+            {"stage": name, "elapsed_seconds": round(elapsed, 3), "detail": detail}
+        )
+        log_postprocess(f"{name}: {detail} ({elapsed:.1f}s)")
+
     device = next(model.parameters()).device
     surface_lookup = {id(quotes): surface_ids[i] for i, quotes in enumerate(all_graphs)}
     prediction_splits = []
     if val_data:
+        started = start_stage("predict:val", f"{len(val_data)} surfaces")
         prediction_splits.append(
             _prediction_frame(
                 model,
@@ -1408,7 +1507,9 @@ def _write_run_artifacts(
                 ],
             )
         )
+        finish_stage("predict:val", started, f"{len(prediction_splits[-1])} rows")
     if test_data:
+        started = start_stage("predict:test", f"{len(test_data)} surfaces")
         prediction_splits.append(
             _prediction_frame(
                 model,
@@ -1421,8 +1522,10 @@ def _write_run_artifacts(
                 ],
             )
         )
+        finish_stage("predict:test", started, f"{len(prediction_splits[-1])} rows")
     if extra_prediction_splits:
         for split_name, split_surfaces in extra_prediction_splits.items():
+            started = start_stage(f"predict:{split_name}", f"{len(split_surfaces)} surfaces")
             ids = (
                 extra_prediction_surface_ids.get(split_name)
                 if extra_prediction_surface_ids is not None
@@ -1431,30 +1534,98 @@ def _write_run_artifacts(
             prediction_splits.append(
                 _prediction_frame(model, split_surfaces, device, split_name, ids)
             )
+            finish_stage(
+                f"predict:{split_name}",
+                started,
+                f"{len(prediction_splits[-1])} rows",
+            )
     predictions = (
         pd.concat(prediction_splits, ignore_index=True) if prediction_splits else pd.DataFrame()
     )
     predictions_path = output_dir / "predictions.parquet"
+    started = start_stage("write:predictions", f"{len(predictions)} rows")
     predictions.to_parquet(predictions_path, index=False)
+    finish_stage("write:predictions", started, str(predictions_path.name))
 
+    started = start_stage("metrics", "summarizing model predictions")
     metrics_summary = _metrics_summary(predictions, final_val_loss, final_test_loss, run_label)
     (output_dir / "metrics_summary.json").write_text(
         json.dumps(metrics_summary, indent=2, sort_keys=True) + "\n"
     )
+    finish_stage("metrics", started, "metrics_summary.json")
 
-    baselines = _train_only_baseline_summary(train_data, predictions)
+    baseline_scope = _format_split_scope(config.baseline_eval_splits)
+    started = start_stage(
+        "baselines",
+        f"preset={config.baseline_preset} eval_splits={baseline_scope}",
+    )
+    baselines = _train_only_baseline_summary(
+        train_data,
+        predictions,
+        baseline_preset=config.baseline_preset,
+        baseline_eval_splits=config.baseline_eval_splits,
+        svi_timeout_seconds=config.svi_timeout_seconds,
+        svi_maxiter=config.svi_maxiter,
+        progress=log_postprocess,
+    )
     baselines.to_csv(output_dir / "baselines_summary.csv", index=False)
+    finish_stage("baselines", started, f"{len(baselines)} rows")
+
+    started = start_stage("diagnostic-baselines", "leakage-prone reference only")
     _diagnostic_leakage_prone_baseline_summary(predictions).to_csv(
         output_dir / "diagnostic_leakage_prone_baselines.csv",
         index=False,
     )
+    finish_stage("diagnostic-baselines", started, "diagnostic_leakage_prone_baselines.csv")
+
+    started = start_stage("diagnostics:price", f"{len(predictions)} rows")
     price_diagnostics = _price_diagnostics(predictions)
-    no_arb_diagnostics = _no_arbitrage_diagnostics(predictions)
+    finish_stage("diagnostics:price", started, "diagnostics_price.json")
+
+    no_arb_scope = (
+        f"mode={config.no_arb_diagnostics_mode} "
+        f"eval_splits={_format_split_scope(config.no_arb_eval_splits)} "
+        f"max_surfaces_per_split={config.no_arb_max_surfaces_per_split}"
+    )
+    started = start_stage("diagnostics:no-arb", no_arb_scope)
+    no_arb_diagnostics = _no_arbitrage_diagnostics(
+        predictions,
+        mode=config.no_arb_diagnostics_mode,
+        eval_splits=config.no_arb_eval_splits,
+        max_surfaces_per_split=config.no_arb_max_surfaces_per_split,
+        sample_seed=config.no_arb_sample_seed or config.seed,
+    )
+    metadata = no_arb_diagnostics.get("metadata", {})
+    finish_stage(
+        "diagnostics:no-arb",
+        started,
+        f"diagnostics_no_arbitrage.json rows={metadata.get('row_count', len(predictions))}",
+    )
     (output_dir / "diagnostics_price.json").write_text(
         json.dumps(price_diagnostics, indent=2, sort_keys=True) + "\n"
     )
     (output_dir / "diagnostics_no_arbitrage.json").write_text(
         json.dumps(no_arb_diagnostics, indent=2, sort_keys=True) + "\n"
+    )
+
+    postprocess_summary = {
+        "run_label": run_label,
+        "baseline_preset": config.baseline_preset,
+        "baseline_eval_splits": list(config.baseline_eval_splits),
+        "svi_timeout_seconds": config.svi_timeout_seconds,
+        "svi_maxiter": config.svi_maxiter,
+        "no_arb_diagnostics": no_arb_diagnostics.get("metadata", {}),
+        "prediction_rows": int(len(predictions)),
+        "prediction_rows_by_split": (
+            predictions.groupby("split").size().astype(int).to_dict()
+            if "split" in predictions and not predictions.empty
+            else {}
+        ),
+        "timings": postprocess_timings,
+        "elapsed_seconds": round(time.monotonic() - postprocess_started, 3),
+    }
+    (output_dir / "postprocess_summary.json").write_text(
+        json.dumps(postprocess_summary, indent=2, sort_keys=True) + "\n"
     )
 
     split_payload = dict(split_manifest or {})
@@ -1499,11 +1670,24 @@ def _write_run_artifacts(
         "no_arbitrage": {
             "training_regularizer": "decoded_calendar_and_convexity_only",
             "paper_facing_diagnostics": True,
+            "diagnostic_mode": config.no_arb_diagnostics_mode,
+            "diagnostic_eval_splits": list(config.no_arb_eval_splits),
+            "diagnostic_max_surfaces_per_split": config.no_arb_max_surfaces_per_split,
+            "diagnostic_sampling_unit": "surface_id",
             "embedding_proxy_regularizers": "disabled_for_benchmark_protocol",
             "put_call_parity": (
                 "diagnostic_only_until_rate_forward_dividend_assumptions_are_explicit"
             ),
             "note": "diagnostics_no_arbitrage.json is computed after training on decoded prices",
+        },
+        "protocol": {
+            "task_mode": config.task_mode,
+            "target_space": config.target_space,
+            "mask_regime": config.mask_regime,
+            "query_node_feature_policy": config.query_node_feature_policy,
+            "visible_context_policy": config.visible_context_policy,
+            "normalizer_scope": config.normalizer_scope,
+            "uses_masked_quote_features": False,
         },
         "artifacts": [
             "manifest.json",
@@ -1515,6 +1699,7 @@ def _write_run_artifacts(
             "diagnostic_leakage_prone_baselines.csv",
             "diagnostics_price.json",
             "diagnostics_no_arbitrage.json",
+            "postprocess_summary.json",
             "README.md",
         ],
     }
@@ -1542,8 +1727,10 @@ def _metrics_summary(
         masked = predictions[predictions["is_masked_target"].astype(bool)]
         if not masked.empty:
             masked_error = masked["iv_pred"] - masked["iv_true"]
-            summary["masked_iv_mae"] = float(masked_error.abs().mean())
+            masked_abs_error = masked_error.abs()
+            summary["masked_iv_mae"] = float(masked_abs_error.mean())
             summary["masked_iv_rmse"] = float(np.sqrt((masked_error**2).mean()))
+            summary["masked_iv_p90_abs_error"] = float(masked_abs_error.quantile(0.90))
             summary["masked_count"] = int(len(masked))
             summary["headline_metric"] = "masked_iv_mae"
         else:
@@ -1593,23 +1780,59 @@ def _metrics_summary(
             .round(8)
             .to_dict()
         )
+        if "is_masked_target" in predictions:
+            masked = predictions[predictions["is_masked_target"].astype(bool)]
+            if not masked.empty:
+                masked_series = series.loc[masked.index]
+                summary[f"masked_by_{bucket_name}"] = (
+                    masked.assign(abs_error=(masked["iv_pred"] - masked["iv_true"]).abs())
+                    .groupby(masked_series, observed=True)["abs_error"]
+                    .mean()
+                    .round(8)
+                    .to_dict()
+                )
     return summary
 
 
 def _train_only_baseline_summary(
-    train_surfaces: list[Any], predictions: pd.DataFrame
+    train_surfaces: list[Any],
+    predictions: pd.DataFrame,
+    *,
+    baseline_preset: str = "full",
+    baseline_eval_splits: tuple[str, ...] | list[str] | None = ("val", "test"),
+    svi_timeout_seconds: float = 1.0,
+    svi_maxiter: int = 200,
+    progress: Any | None = None,
 ) -> pd.DataFrame:
     """Train-fitted baselines for fixed split / masked reconstruction evaluation."""
 
+    def log(message: str) -> None:
+        if progress is not None:
+            progress(f"baselines: {message}")
+
+    baseline_preset = str(baseline_preset).lower()
+    if baseline_preset not in {"none", "fast", "full"}:
+        msg = "baseline_preset must be one of: none, fast, full"
+        raise ValueError(msg)
+    if baseline_preset == "none":
+        log("skipped because preset=none")
+        return _empty_baseline_frame()
     if predictions.empty:
         return _empty_baseline_frame()
     train_frame = _surface_quote_frame(train_surfaces)
     if train_frame.empty:
         return _empty_baseline_frame()
 
-    eval_frame = predictions.reset_index(drop=True).copy()
-    if "is_masked_target" in eval_frame and eval_frame["is_masked_target"].astype(bool).any():
-        eval_frame = eval_frame[eval_frame["is_masked_target"].astype(bool)].copy()
+    all_eval_frame = predictions.reset_index(drop=True).copy()
+    if baseline_eval_splits and "split" in all_eval_frame:
+        split_set = {str(split) for split in baseline_eval_splits}
+        all_eval_frame = all_eval_frame[all_eval_frame["split"].astype(str).isin(split_set)].copy()
+    eval_frame = all_eval_frame
+    if (
+        "is_masked_target" in all_eval_frame
+        and all_eval_frame["is_masked_target"].astype(bool).any()
+    ):
+        eval_frame = all_eval_frame[all_eval_frame["is_masked_target"].astype(bool)].copy()
         eval_scope = "masked_nodes"
     else:
         eval_scope = "all_nodes"
@@ -1617,36 +1840,473 @@ def _train_only_baseline_summary(
         return _empty_baseline_frame()
 
     global_mean = float(train_frame["iv_true"].mean())
+    train_min = float(train_frame["iv_true"].min())
+    train_max = float(train_frame["iv_true"].max())
     by_underlying = train_frame.groupby("underlying", dropna=False)["iv_true"].mean().to_dict()
     by_bucket = train_frame.groupby("bucket", dropna=False)["iv_true"].mean().to_dict()
+    log(
+        "eval_rows="
+        f"{len(eval_frame)} train_rows={len(train_frame)} "
+        f"preset={baseline_preset} eval_splits={_format_split_scope(baseline_eval_splits)}"
+    )
     baseline_preds = {
         "train_mean_iv_global": pd.Series(global_mean, index=eval_frame.index),
         "train_mean_iv_by_underlying": eval_frame["underlying"]
         .map(by_underlying)
         .fillna(global_mean),
-        "train_mean_iv_by_moneyness_tenor_bucket": eval_frame.apply(
-            lambda row: by_bucket.get(_bucket_key_from_row(row), global_mean),
-            axis=1,
+        "train_mean_iv_by_moneyness_tenor_bucket": pd.Series(
+            [
+                by_bucket.get(_bucket_key_from_row(row), global_mean)
+                for _, row in eval_frame.iterrows()
+            ],
+            index=eval_frame.index,
         ),
-        "train_knn_moneyness_tenor": _train_knn_iv_baseline(train_frame, eval_frame),
+        "random_uniform_iv": pd.Series(
+            np.random.default_rng(0).uniform(train_min, train_max, size=len(eval_frame)),
+            index=eval_frame.index,
+        ),
     }
-    model_mae = float((eval_frame["iv_true"] - eval_frame["iv_pred"]).abs().mean())
+    log("train_knn_moneyness_tenor start")
+    started = time.monotonic()
+    baseline_preds["train_knn_moneyness_tenor"] = _train_knn_iv_baseline(
+        train_frame, eval_frame
+    )
+    log(f"train_knn_moneyness_tenor done ({time.monotonic() - started:.1f}s)")
     rows = []
     for name, pred in baseline_preds.items():
-        pred = pd.Series(pred, index=eval_frame.index).astype(float)
-        err = eval_frame["iv_true"].astype(float) - pred
         rows.append(
-            {
-                "baseline": name,
-                "fit_scope": "train_only",
-                "eval_scope": eval_scope,
-                "eval_rows": int(len(eval_frame)),
-                "iv_mae": float(err.abs().mean()),
-                "iv_rmse": float(np.sqrt((err**2).mean())),
-                "model_delta_mae": model_mae - float(err.abs().mean()),
-            }
+            _baseline_metric_row(
+                name,
+                pred,
+                eval_frame,
+                fit_scope="train_only",
+                eval_scope=eval_scope,
+                uses_eval_visible_nodes=False,
+            )
         )
-    return pd.DataFrame(rows)
+    within_preds = _within_surface_baseline_predictions(
+        all_eval_frame,
+        eval_frame,
+        include_svi=baseline_preset == "full",
+        svi_timeout_seconds=svi_timeout_seconds,
+        svi_maxiter=svi_maxiter,
+        progress=progress,
+    )
+    for name, payload in within_preds.items():
+        rows.append(
+            _baseline_metric_row(
+                name,
+                payload["pred"],
+                eval_frame,
+                fit_scope="eval_visible_only",
+                eval_scope=eval_scope,
+                uses_eval_visible_nodes=True,
+                status=payload.get("status"),
+            )
+            | payload.get("metadata", {})
+        )
+    result = pd.DataFrame(rows)
+    result["baseline_preset"] = baseline_preset
+    result["baseline_eval_splits"] = _format_split_scope(baseline_eval_splits)
+    return result
+
+
+def _baseline_metric_row(
+    baseline: str,
+    pred: pd.Series,
+    eval_frame: pd.DataFrame,
+    *,
+    fit_scope: str,
+    eval_scope: str,
+    uses_eval_visible_nodes: bool,
+    status: pd.Series | None = None,
+) -> dict[str, Any]:
+    pred = pd.Series(pred, index=eval_frame.index).astype(float)
+    valid = pred.notna() & np.isfinite(pred) & eval_frame["iv_true"].notna()
+    err = eval_frame.loc[valid, "iv_true"].astype(float) - pred.loc[valid]
+    model_err = eval_frame.loc[valid, "iv_true"].astype(float) - eval_frame.loc[
+        valid, "iv_pred"
+    ].astype(float)
+    status = (
+        pd.Series("ok", index=eval_frame.index)
+        if status is None
+        else status.reindex(eval_frame.index).fillna("ok")
+    )
+    status_counts = status.value_counts(dropna=False).to_dict()
+    predicted_rows = int(valid.sum())
+    eval_rows = int(len(eval_frame))
+    row: dict[str, Any] = {
+        "baseline": baseline,
+        "fit_scope": fit_scope,
+        "eval_scope": eval_scope,
+        "eval_rows": eval_rows,
+        "predicted_rows": predicted_rows,
+        "failed_rows": int(eval_rows - predicted_rows),
+        "uses_eval_visible_nodes": bool(uses_eval_visible_nodes),
+        "visible_context_policy": "visible_nodes_after_mask"
+        if uses_eval_visible_nodes
+        else "train_only",
+        "uses_masked_quote_features": False,
+        "iv_mae": float(err.abs().mean()) if predicted_rows else np.nan,
+        "iv_rmse": float(np.sqrt((err**2).mean())) if predicted_rows else np.nan,
+        "model_delta_mae": (
+            float(model_err.abs().mean() - err.abs().mean()) if predicted_rows else np.nan
+        ),
+        "fit_success_rate": predicted_rows / eval_rows if eval_rows else np.nan,
+        "failure_rate": float(1.0 - predicted_rows / eval_rows) if eval_rows else np.nan,
+    }
+    for key in ("ok", "underidentified", "fit_failed", "timeout", "no_visible_context"):
+        row[f"{key}_rate"] = float(status_counts.get(key, 0) / eval_rows) if eval_rows else np.nan
+    return row
+
+
+def _within_surface_baseline_predictions(
+    all_eval_frame: pd.DataFrame,
+    eval_frame: pd.DataFrame,
+    *,
+    include_svi: bool = True,
+    svi_timeout_seconds: float = 1.0,
+    svi_maxiter: int = 200,
+    progress: Any | None = None,
+) -> dict[str, dict[str, Any]]:
+    visible = _visible_eval_frame(all_eval_frame)
+    if {"split", "surface_id"}.issubset(visible.columns) and {"split", "surface_id"}.issubset(
+        eval_frame.columns
+    ):
+        eval_keys = pd.MultiIndex.from_frame(eval_frame[["split", "surface_id"]]).unique()
+        visible_keys = pd.MultiIndex.from_frame(visible[["split", "surface_id"]])
+        visible = visible.loc[visible_keys.isin(eval_keys)].copy()
+
+    def log(message: str) -> None:
+        if progress is not None:
+            progress(f"baselines: {message}")
+
+    result: dict[str, dict[str, Any]] = {}
+    for name, fn in [
+        ("within_surface_knn_moneyness_tenor", _within_surface_knn_baseline),
+        ("within_surface_local_linear", _within_surface_local_linear_baseline),
+        ("within_surface_rbf", _within_surface_rbf_baseline),
+    ]:
+        started = time.monotonic()
+        log(f"{name} start")
+        result[name] = {"pred": fn(visible, eval_frame)}
+        log(f"{name} done ({time.monotonic() - started:.1f}s)")
+    if include_svi:
+        started = time.monotonic()
+        log(
+            "within_surface_svi_raw_per_expiry start "
+            f"(timeout={svi_timeout_seconds}s maxiter={svi_maxiter})"
+        )
+        result["within_surface_svi_raw_per_expiry"] = _within_surface_svi_raw_baseline(
+            visible,
+            eval_frame,
+            timeout_seconds=svi_timeout_seconds,
+            maxiter=svi_maxiter,
+        )
+        log(
+            "within_surface_svi_raw_per_expiry done "
+            f"({time.monotonic() - started:.1f}s)"
+        )
+    else:
+        log("within_surface_svi_raw_per_expiry skipped by baseline_preset=fast")
+    return result
+
+
+def _visible_eval_frame(all_eval_frame: pd.DataFrame) -> pd.DataFrame:
+    frame = all_eval_frame.copy()
+    if "input_target_visible" in frame:
+        visible = frame["input_target_visible"].astype(bool)
+    elif "is_masked_target" in frame:
+        visible = ~frame["is_masked_target"].astype(bool)
+    else:
+        visible = pd.Series(True, index=frame.index)
+    return frame[visible & frame["iv_true"].notna()].copy()
+
+
+def _surface_group_key(row: pd.Series) -> tuple[Any, ...]:
+    return (row.get("split"), row.get("surface_id"))
+
+
+def _baseline_features(frame: pd.DataFrame) -> np.ndarray:
+    return np.column_stack(
+        [
+            frame["log_moneyness"].fillna(0.0).to_numpy(dtype=float),
+            frame["tenor_days"].fillna(0.0).to_numpy(dtype=float) / 365.25,
+            (frame["option_type"].astype(str) == "P").to_numpy(dtype=float) * 0.25,
+        ]
+    )
+
+
+def _within_surface_knn_baseline(
+    visible_frame: pd.DataFrame,
+    eval_frame: pd.DataFrame,
+    k: int = 5,
+) -> pd.Series:
+    from scipy.spatial import cKDTree
+
+    preds: dict[Any, float] = {}
+    grouped = {
+        key: group for key, group in visible_frame.groupby(["split", "surface_id"], dropna=False)
+    }
+    for key, target_group in eval_frame.groupby(["split", "surface_id"], dropna=False):
+        candidates = grouped.get(key)
+        if candidates is None or candidates.empty:
+            for idx in target_group.index:
+                preds[idx] = np.nan
+            continue
+        features = _baseline_features(candidates)
+        target = _baseline_features(target_group)
+        values = candidates["iv_true"].to_numpy(dtype=float)
+        query_k = min(k, len(candidates))
+        try:
+            _, nearest = cKDTree(features).query(target, k=query_k)
+        except ValueError:
+            for idx in target_group.index:
+                preds[idx] = np.nan
+            continue
+        nearest = np.asarray(nearest)
+        if query_k == 1:
+            nearest = nearest.reshape(-1, 1)
+        pred_values = np.nanmean(values[nearest], axis=1)
+        for idx, value in zip(target_group.index, pred_values, strict=False):
+            preds[idx] = float(value)
+    return pd.Series(preds, index=eval_frame.index)
+
+
+def _within_surface_local_linear_baseline(
+    visible_frame: pd.DataFrame,
+    eval_frame: pd.DataFrame,
+) -> pd.Series:
+    preds: dict[Any, float] = {}
+    grouped = {
+        key: group for key, group in visible_frame.groupby(["split", "surface_id"], dropna=False)
+    }
+    for key, target_group in eval_frame.groupby(["split", "surface_id"], dropna=False):
+        candidates = grouped.get(key)
+        if candidates is None or len(candidates) < 4:
+            for idx in target_group.index:
+                preds[idx] = np.nan
+            continue
+        x = np.column_stack([np.ones(len(candidates)), _baseline_features(candidates)])
+        y = candidates["iv_true"].to_numpy(dtype=float)
+        try:
+            beta, *_ = np.linalg.lstsq(x, y, rcond=None)
+        except np.linalg.LinAlgError:
+            for idx in target_group.index:
+                preds[idx] = np.nan
+            continue
+        target_x = np.column_stack(
+            [np.ones(len(target_group)), _baseline_features(target_group)]
+        )
+        pred_values = np.clip(target_x @ beta, 1e-6, 5.0)
+        for idx, value in zip(target_group.index, pred_values, strict=False):
+            preds[idx] = float(value)
+    return pd.Series(preds, index=eval_frame.index)
+
+
+def _within_surface_rbf_baseline(
+    visible_frame: pd.DataFrame,
+    eval_frame: pd.DataFrame,
+) -> pd.Series:
+    from scipy.interpolate import RBFInterpolator
+
+    preds: dict[Any, float] = {}
+    grouped = {
+        key: group for key, group in visible_frame.groupby(["split", "surface_id"], dropna=False)
+    }
+    for key, target_group in eval_frame.groupby(["split", "surface_id"], dropna=False):
+        candidates = grouped.get(key)
+        if candidates is None or len(candidates) < 4:
+            for idx in target_group.index:
+                preds[idx] = np.nan
+            continue
+        try:
+            model = RBFInterpolator(
+                _baseline_features(candidates),
+                candidates["iv_true"].to_numpy(dtype=float),
+                neighbors=min(32, len(candidates)),
+                smoothing=1e-5,
+                kernel="thin_plate_spline",
+            )
+            values = model(_baseline_features(target_group))
+        except (ValueError, np.linalg.LinAlgError):
+            for idx in target_group.index:
+                preds[idx] = np.nan
+            continue
+        for idx, value in zip(target_group.index, values, strict=False):
+            preds[idx] = float(np.clip(value, 1e-6, 5.0))
+    return pd.Series(preds, index=eval_frame.index)
+
+
+def _within_surface_svi_raw_baseline(
+    visible_frame: pd.DataFrame,
+    eval_frame: pd.DataFrame,
+    *,
+    timeout_seconds: float = 1.0,
+    maxiter: int = 200,
+) -> dict[str, Any]:
+    preds = pd.Series(np.nan, index=eval_frame.index, dtype=float)
+    status = pd.Series("no_visible_context", index=eval_frame.index, dtype=object)
+    required = {"split", "surface_id", "expiry", "iv_true", "log_moneyness", "tenor_years"}
+    if not required.issubset(set(visible_frame.columns)) or not required.issubset(
+        set(eval_frame.columns)
+    ):
+        return {
+            "pred": preds,
+            "status": status,
+            "metadata": {
+                "fit_count": 0,
+                "fit_ok_rate": 0.0,
+                "fit_timeout_rate": 0.0,
+                "fit_underidentified_rate": 0.0,
+                "fit_failed_rate": 0.0,
+                "fallback_target": "",
+            },
+        }
+    fit_cache: dict[tuple[Any, ...], dict[str, Any]] = {}
+    fit_counts: dict[str, int] = {}
+    visible_groups = {
+        key: group
+        for key, group in visible_frame.groupby(["split", "surface_id", "expiry"], dropna=False)
+    }
+    for key, target_group in eval_frame.groupby(["split", "surface_id", "expiry"], dropna=False):
+        fit = fit_cache.get(key)
+        if fit is None:
+            fit = _fit_svi_slice_raw(
+                visible_groups.get(key, pd.DataFrame()),
+                timeout_seconds=timeout_seconds,
+                maxiter=maxiter,
+            )
+            fit_cache[key] = fit
+            fit_counts[str(fit["status"])] = fit_counts.get(str(fit["status"]), 0) + 1
+        if fit["status"] != "ok":
+            status.loc[target_group.index] = fit["status"]
+            continue
+        tau = target_group["tenor_years"].astype(float).clip(lower=1e-8).to_numpy()
+        k = target_group["log_moneyness"].fillna(0.0).to_numpy(dtype=float)
+        total_variance = _svi_total_variance(k, fit["params"])
+        valid = np.isfinite(total_variance) & (total_variance > 0) & np.isfinite(tau)
+        values = np.full(len(target_group), np.nan, dtype=float)
+        values[valid] = np.sqrt(np.maximum(total_variance[valid] / tau[valid], 1e-12))
+        preds.loc[target_group.index] = np.clip(values, 1e-6, 5.0)
+        status.loc[target_group.index] = np.where(np.isfinite(values), "ok", "fit_failed")
+    total_fits = max(sum(fit_counts.values()), 1)
+    return {
+        "pred": preds,
+        "status": status,
+        "metadata": {
+            "fit_count": int(sum(fit_counts.values())),
+            "fit_ok_rate": float(fit_counts.get("ok", 0) / total_fits),
+            "fit_timeout_rate": float(fit_counts.get("timeout", 0) / total_fits),
+            "fit_underidentified_rate": float(fit_counts.get("underidentified", 0) / total_fits),
+            "fit_failed_rate": float(fit_counts.get("fit_failed", 0) / total_fits),
+            "fallback_target": "",
+        },
+    }
+
+
+def _fit_svi_slice_raw(
+    visible_slice: pd.DataFrame,
+    *,
+    timeout_seconds: float = 1.0,
+    maxiter: int = 200,
+) -> dict[str, Any]:
+    from scipy.optimize import minimize
+
+    if visible_slice.empty:
+        return {"status": "no_visible_context", "params": None}
+    frame = visible_slice[
+        visible_slice["iv_true"].notna()
+        & visible_slice["log_moneyness"].notna()
+        & visible_slice["tenor_years"].notna()
+    ].copy()
+    if len(frame) < 5 or frame["log_moneyness"].nunique() < 5:
+        return {"status": "underidentified", "params": None}
+    tau = float(np.nanmedian(frame["tenor_years"].astype(float)))
+    if not np.isfinite(tau) or tau <= 0:
+        return {"status": "underidentified", "params": None}
+    k = frame["log_moneyness"].to_numpy(dtype=float)
+    y = (np.clip(frame["iv_true"].to_numpy(dtype=float), 1e-8, None) ** 2) * tau
+    if not np.all(np.isfinite(k)) or not np.all(np.isfinite(y)):
+        return {"status": "fit_failed", "params": None}
+
+    k_min = float(np.min(k))
+    k_max = float(np.max(k))
+    y_med = float(np.median(y))
+    y_max = float(np.max(y))
+    bounds = [
+        (0.0, max(4.0 * y_max, 0.5)),
+        (1e-6, 5.0),
+        (-0.999, 0.999),
+        (k_min - 1.0, k_max + 1.0),
+        (1e-4, 2.0),
+    ]
+    starts = [
+        np.array([max(0.5 * y_med, 1e-5), 0.1, 0.0, float(np.median(k)), 0.1]),
+        np.array([max(0.25 * y_med, 1e-5), 0.3, -0.3, k_min, 0.2]),
+        np.array([max(0.25 * y_med, 1e-5), 0.3, 0.3, k_max, 0.2]),
+    ]
+
+    def objective(params: np.ndarray) -> float:
+        w = _svi_total_variance(k, params)
+        if not np.all(np.isfinite(w)):
+            return 1e12
+        penalty = float(np.square(np.minimum(w, 0.0)).sum()) * 1e6
+        return float(np.mean((w - y) ** 2) + penalty)
+
+    best_params: np.ndarray | None = None
+    best_fun = float("inf")
+    try:
+        with _wall_time_limit(timeout_seconds):
+            for start in starts:
+                result = minimize(
+                    objective,
+                    start,
+                    method="L-BFGS-B",
+                    bounds=bounds,
+                    options={"maxiter": maxiter, "ftol": 1e-12},
+                )
+                if result.success and float(result.fun) < best_fun:
+                    best_fun = float(result.fun)
+                    best_params = np.asarray(result.x, dtype=float)
+    except TimeoutError:
+        return {"status": "timeout", "params": None}
+    if best_params is None or not np.all(np.isfinite(best_params)):
+        return {"status": "fit_failed", "params": None}
+    fitted = _svi_total_variance(k, best_params)
+    if not np.all(np.isfinite(fitted)) or np.any(fitted <= 0):
+        return {"status": "fit_failed", "params": None}
+    return {"status": "ok", "params": best_params}
+
+
+def _svi_total_variance(k: np.ndarray, params: np.ndarray | None) -> np.ndarray:
+    if params is None:
+        return np.full_like(k, np.nan, dtype=float)
+    a, b, rho, m, sigma = [float(value) for value in params]
+    return a + b * (rho * (k - m) + np.sqrt((k - m) ** 2 + sigma**2))
+
+
+@contextmanager
+def _wall_time_limit(seconds: float):
+    if (
+        seconds <= 0
+        or threading.current_thread() is not threading.main_thread()
+        or not hasattr(signal, "SIGALRM")
+    ):
+        yield
+        return
+    previous = signal.getsignal(signal.SIGALRM)
+
+    def _raise_timeout(_signum: int, _frame: Any) -> None:
+        raise TimeoutError
+
+    signal.signal(signal.SIGALRM, _raise_timeout)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0.0)
+        signal.signal(signal.SIGALRM, previous)
 
 
 def _empty_baseline_frame() -> pd.DataFrame:
@@ -1657,9 +2317,16 @@ def _empty_baseline_frame() -> pd.DataFrame:
                 "fit_scope": "train_only",
                 "eval_scope": "empty",
                 "eval_rows": 0,
+                "predicted_rows": 0,
+                "failed_rows": 0,
+                "uses_eval_visible_nodes": False,
+                "visible_context_policy": "train_only",
+                "uses_masked_quote_features": False,
                 "iv_mae": np.nan,
                 "iv_rmse": np.nan,
                 "model_delta_mae": np.nan,
+                "fit_success_rate": np.nan,
+                "failure_rate": np.nan,
             }
         ]
     )
@@ -1713,18 +2380,25 @@ def _train_knn_iv_baseline(
     eval_frame: pd.DataFrame,
     k: int = 5,
 ) -> pd.Series:
+    from scipy.spatial import cKDTree
+
     global_mean = float(train_frame["iv_true"].mean())
     if train_frame.empty:
         return pd.Series(global_mean, index=eval_frame.index)
     train_features = _baseline_feature_matrix(train_frame)
     eval_features = _baseline_feature_matrix(eval_frame)
     values = train_frame["iv_true"].to_numpy(dtype=float)
-    preds = []
-    for feature in eval_features:
-        dist = np.sum((train_features - feature) ** 2, axis=1)
-        nearest = np.argsort(dist)[: min(k, len(train_features))]
-        preds.append(float(np.nanmean(values[nearest])) if len(nearest) else global_mean)
-    return pd.Series(preds, index=eval_frame.index)
+    query_k = min(k, len(train_features))
+    tree = cKDTree(train_features)
+    try:
+        _, nearest = tree.query(eval_features, k=query_k, workers=-1)
+    except TypeError:
+        _, nearest = tree.query(eval_features, k=query_k)
+    nearest = np.asarray(nearest)
+    if query_k == 1:
+        nearest = nearest.reshape(-1, 1)
+    preds = np.nanmean(values[nearest], axis=1)
+    return pd.Series(np.where(np.isfinite(preds), preds, global_mean), index=eval_frame.index)
 
 
 def _baseline_feature_matrix(frame: pd.DataFrame) -> np.ndarray:
@@ -1801,6 +2475,8 @@ def _leave_one_out_group_mean(frame: pd.DataFrame, group_cols: list[str]) -> pd.
 
 
 def _knn_iv_baseline(frame: pd.DataFrame, k: int = 5) -> pd.Series:
+    from scipy.spatial import cKDTree
+
     if len(frame) <= 1:
         return pd.Series(frame["iv_true"].astype(float).mean(), index=frame.index)
     features = np.column_stack(
@@ -1811,22 +2487,32 @@ def _knn_iv_baseline(frame: pd.DataFrame, k: int = 5) -> pd.Series:
         ]
     )
     values = frame["iv_true"].to_numpy(dtype=float)
-    splits = frame["split"].astype(str).to_numpy()
-    preds = []
     global_mean = float(np.nanmean(values))
-    for i, feature in enumerate(features):
-        mask = np.arange(len(frame)) != i
-        same_split = splits == splits[i]
-        candidates = np.where(mask & same_split)[0]
-        if len(candidates) == 0:
-            candidates = np.where(mask)[0]
-        if len(candidates) == 0:
-            preds.append(global_mean)
+    pred_values = np.full(len(frame), global_mean, dtype=float)
+    row_positions = {index: position for position, index in enumerate(frame.index)}
+    for _, group in frame.groupby("split", dropna=False, sort=False):
+        positions = np.asarray([row_positions[index] for index in group.index], dtype=int)
+        if len(positions) <= 1:
             continue
-        dist = np.sum((features[candidates] - feature) ** 2, axis=1)
-        nearest = candidates[np.argsort(dist)[: min(k, len(candidates))]]
-        preds.append(float(np.nanmean(values[nearest])))
-    return pd.Series(preds, index=frame.index)
+        group_features = features[positions]
+        query_k = min(k + 1, len(positions))
+        try:
+            _, nearest_local = cKDTree(group_features).query(
+                group_features, k=query_k, workers=-1
+            )
+        except TypeError:
+            _, nearest_local = cKDTree(group_features).query(group_features, k=query_k)
+        nearest_local = np.asarray(nearest_local)
+        if query_k == 1:
+            nearest_local = nearest_local.reshape(-1, 1)
+        for local_pos, nearest in enumerate(nearest_local):
+            neighbor_local = np.asarray(nearest, dtype=int)
+            neighbor_local = neighbor_local[neighbor_local != local_pos][:k]
+            if len(neighbor_local):
+                pred_values[positions[local_pos]] = float(
+                    np.nanmean(values[positions[neighbor_local]])
+                )
+    return pd.Series(pred_values, index=frame.index)
 
 
 def _price_diagnostics(predictions: pd.DataFrame) -> dict[str, Any]:
@@ -1875,13 +2561,127 @@ def _price_diagnostics(predictions: pd.DataFrame) -> dict[str, Any]:
     }
 
 
-def _no_arbitrage_diagnostics(predictions: pd.DataFrame) -> dict[str, Any]:
-    if predictions.empty:
-        return {"true_iv": _empty_no_arb_payload(), "pred_iv": _empty_no_arb_payload()}
+def _no_arbitrage_diagnostics(
+    predictions: pd.DataFrame,
+    *,
+    mode: str = "full",
+    eval_splits: tuple[str, ...] | list[str] | None = None,
+    max_surfaces_per_split: int | None = None,
+    sample_seed: int = 0,
+) -> dict[str, Any]:
+    mode = str(mode).lower()
+    if mode not in {"none", "full", "sampled_surface"}:
+        msg = "no-arb diagnostics mode must be one of: none, full, sampled_surface"
+        raise ValueError(msg)
+    diagnostic_frame, metadata = _select_no_arb_diagnostic_frame(
+        predictions,
+        mode=mode,
+        eval_splits=eval_splits,
+        max_surfaces_per_split=max_surfaces_per_split,
+        sample_seed=sample_seed,
+    )
+    if diagnostic_frame.empty:
+        return {
+            "metadata": metadata,
+            "true_iv": _empty_no_arb_payload(),
+            "pred_iv": _empty_no_arb_payload(),
+        }
     return {
-        "true_iv": _no_arbitrage_for_iv_column(predictions, "iv_true"),
-        "pred_iv": _no_arbitrage_for_iv_column(predictions, "iv_pred"),
+        "metadata": metadata,
+        "true_iv": _no_arbitrage_for_iv_column(diagnostic_frame, "iv_true"),
+        "pred_iv": _no_arbitrage_for_iv_column(diagnostic_frame, "iv_pred"),
     }
+
+
+def _select_no_arb_diagnostic_frame(
+    predictions: pd.DataFrame,
+    *,
+    mode: str,
+    eval_splits: tuple[str, ...] | list[str] | None,
+    max_surfaces_per_split: int | None,
+    sample_seed: int,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    frame = predictions.reset_index(drop=True).copy()
+    metadata: dict[str, Any] = {
+        "mode": mode,
+        "sampling_unit": "surface_id",
+        "sample_seed": int(sample_seed),
+        "source_row_count": int(len(frame)),
+        "source_surface_count": int(frame["surface_id"].nunique()) if "surface_id" in frame else 0,
+        "eval_splits": list(eval_splits or ()),
+        "max_surfaces_per_split": max_surfaces_per_split,
+    }
+    if frame.empty or mode == "none":
+        metadata.update(
+            {
+                "row_count": 0,
+                "surface_count": 0,
+                "surface_share": 0.0,
+                "rows_by_split": {},
+                "surfaces_by_split": {},
+            }
+        )
+        return frame.iloc[0:0].copy(), metadata
+    if eval_splits and "split" in frame:
+        split_set = {str(split) for split in eval_splits}
+        frame = frame[frame["split"].astype(str).isin(split_set)].copy()
+    if mode == "sampled_surface" and max_surfaces_per_split is not None:
+        frame = _sample_complete_surfaces(
+            frame,
+            max_surfaces_per_split=max_surfaces_per_split,
+            sample_seed=sample_seed,
+        )
+    surface_count = int(frame["surface_id"].nunique()) if "surface_id" in frame else 0
+    source_surface_count = max(int(metadata["source_surface_count"]), 1)
+    metadata.update(
+        {
+            "row_count": int(len(frame)),
+            "surface_count": surface_count,
+            "surface_share": float(surface_count / source_surface_count),
+            "rows_by_split": (
+                frame.groupby("split").size().astype(int).to_dict()
+                if "split" in frame and not frame.empty
+                else {}
+            ),
+            "surfaces_by_split": (
+                frame.groupby("split")["surface_id"].nunique().astype(int).to_dict()
+                if {"split", "surface_id"}.issubset(frame.columns) and not frame.empty
+                else {}
+            ),
+        }
+    )
+    return frame, metadata
+
+
+def _sample_complete_surfaces(
+    frame: pd.DataFrame,
+    *,
+    max_surfaces_per_split: int,
+    sample_seed: int,
+) -> pd.DataFrame:
+    if frame.empty or max_surfaces_per_split <= 0:
+        return frame.iloc[0:0].copy()
+    if not {"split", "surface_id"}.issubset(frame.columns):
+        return frame
+    selected_keys: set[tuple[str, str]] = set()
+    for split_name, split_frame in frame.groupby("split", dropna=False, sort=True):
+        surface_ids = sorted(str(value) for value in split_frame["surface_id"].dropna().unique())
+        if len(surface_ids) > max_surfaces_per_split:
+            surface_ids = sorted(
+                surface_ids,
+                key=lambda surface_id: _stable_sample_key(
+                    str(split_name), surface_id, sample_seed
+                ),
+            )[:max_surfaces_per_split]
+        selected_keys.update((str(split_name), surface_id) for surface_id in surface_ids)
+    keys = list(zip(frame["split"].astype(str), frame["surface_id"].astype(str), strict=False))
+    keep = pd.Series([key in selected_keys for key in keys], index=frame.index)
+    return frame[keep].copy()
+
+
+def _stable_sample_key(split_name: str, surface_id: str, sample_seed: int) -> str:
+    payload = f"{sample_seed}|{split_name}|{surface_id}".encode()
+    return hashlib.sha256(payload).hexdigest()
 
 
 def _no_arbitrage_for_iv_column(predictions: pd.DataFrame, iv_col: str) -> dict[str, Any]:

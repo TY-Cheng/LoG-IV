@@ -39,4 +39,5 @@ site/
 # OS/editor
 .DS_Store
 .idea/
+.serena/
 .vscode/
