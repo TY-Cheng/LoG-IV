@@ -1868,9 +1868,7 @@ def _train_only_baseline_summary(
     }
     log("train_knn_moneyness_tenor start")
     started = time.monotonic()
-    baseline_preds["train_knn_moneyness_tenor"] = _train_knn_iv_baseline(
-        train_frame, eval_frame
-    )
+    baseline_preds["train_knn_moneyness_tenor"] = _train_knn_iv_baseline(train_frame, eval_frame)
     log(f"train_knn_moneyness_tenor done ({time.monotonic() - started:.1f}s)")
     rows = []
     for name, pred in baseline_preds.items():
@@ -2003,10 +2001,7 @@ def _within_surface_baseline_predictions(
             timeout_seconds=svi_timeout_seconds,
             maxiter=svi_maxiter,
         )
-        log(
-            "within_surface_svi_raw_per_expiry done "
-            f"({time.monotonic() - started:.1f}s)"
-        )
+        log(f"within_surface_svi_raw_per_expiry done ({time.monotonic() - started:.1f}s)")
     else:
         log("within_surface_svi_raw_per_expiry skipped by baseline_preset=fast")
     return result
@@ -2095,9 +2090,7 @@ def _within_surface_local_linear_baseline(
             for idx in target_group.index:
                 preds[idx] = np.nan
             continue
-        target_x = np.column_stack(
-            [np.ones(len(target_group)), _baseline_features(target_group)]
-        )
+        target_x = np.column_stack([np.ones(len(target_group)), _baseline_features(target_group)])
         pred_values = np.clip(target_x @ beta, 1e-6, 5.0)
         for idx, value in zip(target_group.index, pred_values, strict=False):
             preds[idx] = float(value)
@@ -2497,9 +2490,7 @@ def _knn_iv_baseline(frame: pd.DataFrame, k: int = 5) -> pd.Series:
         group_features = features[positions]
         query_k = min(k + 1, len(positions))
         try:
-            _, nearest_local = cKDTree(group_features).query(
-                group_features, k=query_k, workers=-1
-            )
+            _, nearest_local = cKDTree(group_features).query(group_features, k=query_k, workers=-1)
         except TypeError:
             _, nearest_local = cKDTree(group_features).query(group_features, k=query_k)
         nearest_local = np.asarray(nearest_local)
@@ -2669,9 +2660,7 @@ def _sample_complete_surfaces(
         if len(surface_ids) > max_surfaces_per_split:
             surface_ids = sorted(
                 surface_ids,
-                key=lambda surface_id: _stable_sample_key(
-                    str(split_name), surface_id, sample_seed
-                ),
+                key=lambda surface_id: _stable_sample_key(str(split_name), surface_id, sample_seed),
             )[:max_surfaces_per_split]
         selected_keys.update((str(split_name), surface_id) for surface_id in surface_ids)
     keys = list(zip(frame["split"].astype(str), frame["surface_id"].astype(str), strict=False))
