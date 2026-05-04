@@ -4,10 +4,10 @@ Use this prompt before accepting implementation work in LoG-IV.
 
 ## Scope
 
-Review the code as an exploration-stage option-surface graph repo. Separate:
+Review the code as an option-surface graph learning repository. Separate:
 
 - implemented behavior;
-- scaffold-only behavior;
+- placeholder behavior;
 - planned research design;
 - empirical claims that are not yet supported.
 

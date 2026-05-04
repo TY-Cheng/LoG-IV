@@ -1,39 +1,36 @@
-# Synthetic-LoG-IV
+# Synthetic Benchmark
 
-Synthetic-LoG-IV is the public reproducibility scaffold for LoG-IV. Vendor raw
-option data cannot be redistributed, so the synthetic benchmark provides a
-controlled, auditable option-surface graph generator for leakage tests, graph
-shift stress tests, and method ablations.
+Vendor raw option data cannot be redistributed. The synthetic benchmark provides
+a controlled option-surface graph generator for leakage tests, robustness tests,
+and model ablations.
 
 ## Generator Contract
 
-The current generator lives in `src/log_iv/synthetic.py` and is an extension of
-the existing SSVI path, not a separate synthetic-only codebase. The v0 contract
-is:
+The generator lives in `src/log_iv/synthetic.py` and extends the existing SSVI
+path rather than creating a separate synthetic-only codebase. The v0 contract is:
 
 - SSVI clean surfaces with underlying-specific AR(1) temporal drift;
 - liquidity AR(1) drift for spread, volume, and open-interest regimes;
 - optional rare local total-variance bumps for event-style stress tests;
-- heteroscedastic observation noise with quote-level oracle noise metadata;
+- heteroscedastic observation noise with quote-level diagnostic noise metadata;
 - stable logical dataset hashing over sorted, rounded rows rather than Parquet
   bytes;
-- oracle fields prefixed with `oracle_`.
+  fields prefixed with `oracle_`.
 
-Oracle fields are diagnostics only. Graph builders and model inputs must not use
-columns matching `oracle_*`.
+Fields prefixed with `oracle_` are diagnostics only. Graph builders and model
+inputs must not use them.
 
 ## Diagnostics
 
-Synthetic clean surfaces expose oracle diagnostics for:
+Synthetic clean surfaces expose diagnostics for:
 
 - calendar total-variance monotonicity;
 - call butterfly / strike convexity;
 - call vertical-spread monotonicity.
 
-Observed noisy quotes may violate these diagnostics; that is intentional. The
-clean oracle surface should remain the no-arbitrage reference, while noisy
-observations test whether a model can balance quote fit against surface
-geometry.
+Observed noisy quotes may violate these diagnostics. The clean latent surface is
+the reference surface, while noisy observations test whether a model can balance
+quote fit against surface geometry.
 
 ## Hashing Policy
 
@@ -50,6 +47,6 @@ row-group layout.
 
 ## Claim Boundary
 
-Synthetic-LoG-IV supports graph-learning stress tests and public reproducibility.
-It does not claim to fully simulate market dynamics. Real-data claims still come
-from fixed-split U.S. and Japan benchmark artifacts.
+The synthetic benchmark supports graph-learning stress tests and reproducible
+diagnostics. It does not claim to simulate market dynamics. Real-data claims
+come from fixed-split U.S. and Japan benchmark artifacts.

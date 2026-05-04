@@ -1,58 +1,59 @@
 # Results Snapshot
 
-Current evidence state: **credible A1-stratified preliminary result, not final
-paper evidence**.
+Current evidence state: **A1 stratified is a complete preliminary benchmark, not
+final manuscript evidence**.
 
-This page is the reporting ledger. It intentionally excludes smoke runs and old
-single-seed tables. The latest complete result is the 3-seed A1 stratified
-masked-reconstruction benchmark under `reports/runs/benchmark_a1_stratified/`.
+This page records the current empirical evidence. It intentionally excludes
+small pipeline checks and older single-seed tables. The latest complete result
+is the 3-seed A1 stratified masked-reconstruction benchmark under
+`reports/runs/benchmark_a1_stratified/`.
 
-## Project Intro
+## Project Introduction
 
-LoG-IV studies option chains as **irregular, liquidity-marked graphs** rather
-than fixed-grid volatility images. Each option contract is a node with strike,
-tenor, option type, quote, and liquidity marks; edges encode local surface
-geometry and optional liquidity similarity.
+LoG-IV studies option chains as **irregular graphs of option contracts** rather
+than fixed-grid volatility images. Each contract is represented by strike,
+tenor, option type, quote information, and liquidity variables. Edges encode
+local strike-maturity structure and, where used, liquidity similarity.
 
 The core research question is:
 
 > Can graph models reconstruct sparse and irregular option-implied volatility
-> surfaces under leakage-safe masking and heteroscedastic liquidity noise better
-> than strong interpolation and train-only baselines?
+> surfaces under leakage-controlled masking and liquidity-dependent observation
+> noise more accurately than interpolation and train-only baselines?
 
-The paper should be introduced as a graph/geometric ML benchmark and modeling
-problem, not as a trading-alpha or cross-market causality paper. Japan remains
-an OOD graph-domain probe, not the main claim.
+The project should be presented as a graph-learning benchmark and modeling
+study, not as a trading strategy or a cross-market causality study. Japan is an
+out-of-distribution evaluation setting rather than the primary empirical claim.
 
-## Design Innovations
+## Design Choices
 
-- **Leakage-safe Protocol A.** The main task is masked reconstruction with fixed
+- **Leakage-controlled masked reconstruction.** The main task is masked
+  reconstruction with fixed
   temporal splits. Masked query nodes cannot carry same-day bid, ask, mid, IV,
   spread, volume, open interest, decoded price, quote-derived liquidity score,
   or IV-derived Greeks.
 - **Irregular option-surface graph representation.** The benchmark evaluates
   option chains in their native sparse strike-tenor layout instead of forcing a
   regular image grid.
-- **Liquidity-marked heteroscedastic modeling.** Liquidity marks are treated as
-  reliability signals for noisy observations, not only as ordinary node
-  features.
-- **Credible baseline ladder.** Current A1 already compares against train-only
+- **Liquidity-dependent observation noise.** Liquidity variables are treated as
+  possible signals of quote reliability, not only as ordinary node features.
+- **Baseline ladder.** Current A1 already compares against train-only
   means, train-only moneyness-tenor kNN, within-surface kNN, local linear, and
   RBF interpolation. Raw SVI accounting is still pending.
 - **Surface-quality diagnostics.** Runs write masked IV metrics, normalized
   decoded-price diagnostics, and Europeanized calendar / convexity /
   vertical-spread diagnostics.
-- **Synthetic-LoG-IV scaffold.** The public synthetic generator provides AR(1)
-  SSVI-style surfaces, oracle fields, stable logical hashing, and no-arbitrage
-  diagnostics for reproducible mechanism tests.
+- **Synthetic data for reproducibility.** The synthetic generator provides
+  AR(1) SSVI-style surfaces, diagnostic-only fields, stable logical hashing,
+  and no-arbitrage diagnostics for controlled tests.
 
 ## Current Data
 
 | Dataset | Current role | Current status |
 | --- | --- | --- |
-| U.S. expanded options silver | Main Protocol A benchmark | 2,979,716 rows, 40 underlyings, 62 observation dates, 2,480 usable surfaces. |
-| Japan expanded options silver | OOD / graph-domain probe | 531,280 rows, 31 observation dates, 6,179 usable surfaces. |
-| Synthetic-LoG-IV | Public reproducibility and mechanism tests | Generator implemented; canonical release artifact still pending. |
+| U.S. expanded options silver | Main masked-reconstruction benchmark | 2,979,716 rows, 40 underlyings, 62 observation dates, 2,480 usable surfaces. |
+| Japan expanded options silver | Out-of-distribution evaluation | 531,280 rows, 31 observation dates, 6,179 usable surfaces. |
+| Synthetic-LoG-IV | Reproducibility and controlled diagnostics | Generator implemented; canonical release artifact still pending. |
 
 The U.S. data window is enough for masked-reconstruction benchmarking. It is not
 yet enough for broad market-cycle or regime-generalization claims.
@@ -98,14 +99,14 @@ Reference baselines:
 
 Interpretation:
 
-- This is the first complete multi-seed result where graph variants beat both
-  train-only kNN and within-surface interpolation baselines by a large margin.
+- This is the first complete multi-seed result in which graph variants
+  outperform both train-only kNN and within-surface interpolation baselines.
 - The decoded calendar/convexity variant is currently best on masked IV MAE,
   p90 masked error, normalized price error, and sampled no-arbitrage diagnostic
   counts.
-- Liquidity-aware `gnn_liq` improves normalized price error versus
+- Liquidity-aware `gnn_liq` improves normalized price error relative to
   `gnn_no_liq`, but it is not yet better on masked IV MAE. The heteroscedastic
-  LAGOS-Hetero ablation is needed before making a liquidity mechanism claim.
+  model ablation is needed before attributing the result to liquidity modeling.
 - Convexity violations remain frequent. The current result supports
   reconstruction performance, not strict no-arbitrage quality.
 
@@ -119,29 +120,30 @@ Required next evidence:
 - A1 `liquidity_correlated` mask;
 - A1 `block_wing` mask;
 - raw SVI per-expiry accounting with timeout and failure rates;
-- LAGOS-Hetero ablation results;
-- ticker-holdout or graph-shift evaluation;
+- heteroscedastic graph-model ablation results;
+- ticker-holdout or other out-of-distribution evaluation;
 - liquidity-bucket and worst-bucket error tables;
-- AFFS-style error-versus-violation frontier;
-- final figures and paper-facing tables.
+- error-versus-violation trade-off curves;
+- final figures and manuscript-level tables.
 
-## Suggested Sell
+## Suggested Positioning
 
-The cleanest sell is:
+The central positioning is:
 
-> LoG-IV introduces a leakage-safe benchmark for learning from irregular,
-> liquidity-marked option-surface graphs. On real U.S. option chains, graph
+> LoG-IV introduces a leakage-controlled benchmark for learning from irregular
+> option-surface graphs with liquidity-dependent observation noise. On real
+> U.S. option chains, graph
 > models substantially outperform train-only and within-surface interpolation
 > baselines on masked IV reconstruction. The project then studies when
-> reliability-conditioned graph operators help under liquidity-correlated
-> missingness, structured graph sparsity, and cross-market graph-domain shift.
+> graph models conditioned on quote reliability help under liquidity-correlated
+> missingness, structured sparsity, and out-of-distribution evaluation.
 
-Do not sell it as:
+Do not present it as:
 
 - a trading alpha system;
 - a causal U.S.-to-Japan risk-transfer paper;
 - a strict no-arbitrage surface construction method;
-- final evidence that liquidity-aware GNNs dominate all baselines.
+- final evidence that liquidity-aware GNNs outperform all baselines.
 
 ## Immediate Next Runs
 

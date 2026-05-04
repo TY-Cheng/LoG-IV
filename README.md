@@ -1,19 +1,20 @@
 # LoG-IV
 
-Leakage-safe benchmark and heteroscedastic graph operators for
-liquidity-marked option surfaces.
+Benchmarking graph models for irregular option-implied volatility surfaces with
+liquidity-dependent observation noise.
 
-This repository is an exploration-stage research project for LoG-oriented
-option-surface learning. The working idea is to treat option chains as irregular
-sets or graphs rather than regular implied-volatility images. The current phase
-is to establish a leakage-controlled masked-reconstruction benchmark before
-making any graph-learning paper claim.
+This repository supports a research project on option-surface learning. The
+central modeling choice is to represent an option chain as an irregular set or
+graph of contracts, rather than as a fixed strike-maturity image. The current
+phase is to establish a leakage-controlled masked-reconstruction benchmark
+before making substantive claims about graph models.
 
 ## Research Question
 
-Can reliability-conditioned graph or token operators learn option surfaces more
-robustly than grid-based or pointwise baselines when the observed chain is
-irregular, heteroscedastic, sparse, and liquidity-skewed?
+Can graph or token models that condition on quote reliability reconstruct
+implied-volatility surfaces more accurately than pointwise and interpolation
+baselines when the observed option chain is sparse, irregular, and affected by
+liquidity-dependent noise?
 
 The intended empirical ladder is:
 
@@ -21,36 +22,37 @@ The intended empirical ladder is:
 - Surface reconstruction, forecasting, and missing-quote robustness tasks.
 - Liquidity-aware message passing, heteroscedastic reliability modeling, and
   decoded-price surface diagnostics.
-- Japan option/equity transfer or OOD tests using J-Quants and public data where
-  field coverage is strong enough.
+- Japan option or equity evaluations using J-Quants and public data where field
+  coverage is sufficient.
 
-Japan is an OOD and transfer domain, not the single point of failure. If Japanese
-listed-option data are too sparse for full option-graph transfer, the fallback is
-to use Japanese equity realized-volatility or sector tail-risk targets as
-downstream OOD tests.
+Japan is an out-of-distribution evaluation setting, not the main empirical
+claim. If Japanese listed-option data are too sparse for option-graph transfer,
+the fallback is to use Japanese equity realized-volatility or sector tail-risk
+targets as downstream representation tests.
 
 ## Repository Status
 
-Current status: expanded U.S./Japan silver data gates pass, the fixed-split
-masked-reconstruction benchmark protocol runs, and the latest benchmark smoke is
-still diagnostic rather than paper evidence.
+Current status: expanded U.S. and Japan silver data gates pass, the fixed-split
+masked-reconstruction benchmark protocol runs, and the latest A1 stratified
+benchmark is a preliminary multi-seed result rather than final paper evidence.
 
 Implemented now:
 
 - LoG-IV project metadata and docs front door.
 - Source, environment, graph, data, and benchmark protocol contracts.
 - Minimal Python package under `src/log_iv`.
-- A typed option-quote schema and toy graph builder.
+- A typed option-quote schema and graph builder.
 - Credential-safe Massive and J-Quants source probes.
 - Canonical `OptionQuote` adapters for Massive snapshots and J-Quants option rows.
 - Liquidity-aware graph construction with input-order node IDs and bidirectional
   strike/maturity edges.
 - Default ML dependency gate for `torch` and `torch-geometric`.
-- Engineering-smoke synthetic training artifacts under `reports/runs/`.
+- Synthetic training artifacts under `reports/runs/` for engineering checks.
 - First real-data matrix artifacts under `reports/runs/`, including full
   validation/test predictions, baseline summaries, normalized price diagnostics,
   and post-run no-arbitrage diagnostics.
-- A silver-table U.S. to Japan OOD smoke runner with no synthetic fallback.
+- A silver-table U.S. to Japan out-of-distribution evaluation path with no
+  synthetic fallback.
 - Fixed-split `benchmark-protocol` for masked reconstruction with temporal,
   ticker-holdout, and combined split modes.
 - Train-only baselines for benchmark artifacts; the old leave-one-out baselines
@@ -64,11 +66,12 @@ Implemented now:
 - Expanded U.S. silver with 2,480 usable surfaces and expanded Japan silver with
   31 usable observation dates.
 
-Not implemented yet:
+Not yet implemented:
 
 - Rate, dividend, forward-curve, or corporate-action upgrades for inferred IVs.
-- Accepted multi-seed longer benchmark results or paper-facing empirical claims.
-- Paper-facing Japan transfer evidence. Japan is currently an OOD probe.
+- Accepted multi-mask benchmark results or manuscript-level empirical claims.
+- Manuscript-level Japan transfer evidence. Japan is currently an
+  out-of-distribution evaluation setting.
 
 ## Quick Start
 
@@ -87,7 +90,7 @@ just check
 
 `just check` is the single local gate: it syncs all extras, runs formatting and
 lint checks, mypy, tests with coverage, strict docs build, status, source probes,
-and the toy graph smoke.
+and a graph-construction check.
 
 To serve the documentation site:
 
@@ -105,11 +108,11 @@ just fetch-sample all 2026-02-02 2026-04-30
 J-Quants V2 uses API-key authentication through the `x-api-key` header; the live
 credential probe is now part of `just check`.
 
-To reproduce the first matrix and OOD smoke, use the CLI commands recorded in
-`docs/results_snapshot.md`. These are intentionally not separate `just` recipes;
-`just check` remains the main gate.
+To reproduce recorded benchmark families, use the commands listed in
+`docs/results_snapshot.md`. These are intentionally not all separate `just`
+recipes; `just check` remains the main local verification gate.
 
-The credible benchmark entrypoint is:
+The main benchmark entrypoint is:
 
 ```bash
 just data-v1-us
@@ -148,21 +151,22 @@ Never commit vendor secrets or licensed raw payloads.
 - This is a graph-learning benchmark and option-surface representation-learning
   project, not a trading strategy or execution system.
 - A lower reconstruction or forecast loss is not sufficient for a finance claim
-  unless liquidity, missingness, no-arbitrage diagnostics, and OOD behavior are
-  reported together.
-- Japan transfer results should be interpreted as graph-domain shift evidence,
-  not as proof that one market dominates another.
-- Vendor entitlement probes and smoke fixtures are engineering checks, not
+  unless liquidity, missingness, no-arbitrage diagnostics, and
+  out-of-distribution behavior are reported together.
+- Japan transfer results should be interpreted as evaluation under distribution
+  shift, not as evidence of causal market leadership.
+- Vendor entitlement probes and small fixtures are engineering checks, not
   empirical validation.
 
 ## Documentation
 
 - `docs/results_snapshot.md`: current evidence ledger, data gates, benchmark
-  smoke outputs, and paper-readiness boundaries.
-- `docs/paper_plan.md`: research contract, tasks, baselines, metrics, and
+  results, and manuscript-readiness boundaries.
+- `docs/paper_plan.md`: research plan, tasks, baselines, metrics, and
   claim boundaries.
 - `docs/data.md`: source roles, option identifiers, timestamp policy, expanded
-  silver artifacts, IV-inversion assumptions, and OOD data gates.
+  silver artifacts, IV-inversion assumptions, and out-of-distribution data
+  gates.
 - `docs/benchmark_protocol.md`: fixed splits, masked reconstruction, train-only
   baselines, leakage controls, and promotion rules.
 - `docs/graph.md`: node features, edge families, liquidity weighting, masking

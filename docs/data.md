@@ -2,7 +2,7 @@
 
 This page is the canonical contract for data sources, option identifiers,
 timestamp semantics, cache layers, local environment fields, IV-inversion
-assumptions, and OOD data gates.
+assumptions, and out-of-distribution data gates.
 
 ## Source Roles
 
@@ -10,7 +10,7 @@ assumptions, and OOD data gates.
 | --- | --- | --- | --- |
 | Massive U.S. equities | Underlying prices, returns, realized-volatility controls | Flat-file stock daily closes work locally | Current IV inversion uses same-date `us_stocks_sip/day_aggs_v1` closes as spot/forward proxies. |
 | Massive U.S. options | U.S. option chains, quotes, trades, or aggregates depending entitlement | OPRA daily flat-file expansion works locally | Current expanded U.S. silver has 2,480 usable surfaces after filtering. |
-| J-Quants equities | Japanese underlying prices and corporate-action context | V2 API-key probe works locally | Needed for Japan OOD features and realized-vol targets. |
+| J-Quants equities | Japanese underlying prices and corporate-action context | V2 API-key probe works locally | Needed for Japan out-of-distribution features and realized-volatility targets. |
 | J-Quants derivatives/options | Japanese listed option or derivatives chains where available | V2 date-loop expansion works locally | Current expanded Japan silver has 31 usable observation dates. |
 | Public calendars | U.S. and Japan trading sessions and holidays | Core public dependency | Needed for date alignment and cutoff validity. |
 | Public rates/dividends | Risk-free curves, dividend proxies, and robustness controls | Candidate public dependency | Needed before inferred-IV and no-arbitrage diagnostics become paper claims. |
@@ -143,7 +143,7 @@ are ignored by the code path. Under J-Quants V2 the probe reads
 ## Expansion Contract
 
 U.S. historical option panels should come from the Massive/Polygon options
-flat-file path rather than the REST snapshot smoke path. The code expects
+flat-file path rather than the REST snapshot sample path. The code expects
 `MASSIVE_OPTIONS_FLAT_FILE_TEMPLATE` to be a local, `file://`, HTTPS, or `s3://`
 template with `{date}`, `{yyyymmdd}`, `{year}`, `{month}`, `{day}`, or
 `{dataset}` placeholders and writes per-date manifests under
@@ -186,7 +186,8 @@ It covers 40 U.S. underlyings from 2026-02-02 to 2026-04-30 and records:
 - `iv_method=black_forward_bisection_zero_rate_zero_dividend`.
 
 This table is frozen as `data_v1`. It is suitable for Protocol A development
-and first credible benchmark runs, but not yet for market-cycle temporal claims.
+and first multi-seed benchmark runs, but not yet for market-cycle temporal
+claims.
 
 ## Data Version Ladder
 
@@ -195,7 +196,7 @@ The data-first benchmark ladder is:
 | Version | Purpose | U.S. gate | Date policy | Ticker policy |
 | --- | --- | --- | --- | --- |
 | `data_v0` | Pipeline/protocol/baseline development | 1,000+ usable surfaces and 31+ usable dates | Current short window | Current 40-ticker universe |
-| `data_v1` | First credible Protocol A run | 2,400+ usable surfaces and 60+ usable dates | Extend to 2026-02-02 through 2026-04-30 | Same 40 tickers |
+| `data_v1` | First multi-seed Protocol A run | 2,400+ usable surfaces and 60+ usable dates | Extend to 2026-02-02 through 2026-04-30 | Same 40 tickers |
 | `data_v2` | Paper-candidate table | 8,000+ usable surfaces and 126+ usable dates | Six to twelve months before the cutoff | Stable ticker universe before model selection |
 
 The implementation records `data_stage`, `date_range`, `tickers`,
@@ -225,10 +226,10 @@ It records:
 - 6,179 usable `(underlying, observation_date)` surfaces under
   `min_nodes_per_surface=20`.
 
-## U.S. To Japan OOD Gate
+## U.S. To Japan Evaluation Gate
 
-Japan is a graph-domain shift probe for LoG-IV, not the single point of failure
-for the U.S. paper.
+Japan is an out-of-distribution evaluation setting for LoG-IV, not the single
+point of failure for the U.S. benchmark.
 
 Promote Japan option transfer only if:
 
@@ -236,12 +237,12 @@ Promote Japan option transfer only if:
 - liquidity fields are available or measurable;
 - timestamp semantics are clear;
 - a matched U.S. baseline and at least one non-graph baseline exist;
-- OOD splits are fixed before model selection.
+- evaluation splits are fixed before model selection.
 
 Current gate status:
 
-- U.S. expanded gate passes the default 1,000-surface requirement.
+- U.S. expanded gate passes the default 2,400-surface requirement.
 - Japan expanded gate passes the default 20-observation-date requirement.
-- Japan should still be labeled `japan_ood_probe` until market-specific
-  normalization, baseline matching, and transfer/fine-tuning protocols are
-  registered.
+- Japan should be labeled as out-of-distribution evaluation until
+  market-specific normalization, baseline matching, and transfer/fine-tuning
+  protocols are registered.

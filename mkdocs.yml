@@ -1,5 +1,5 @@
 site_name: LoG-IV
-site_description: Liquidity-aware graph learning for irregular option surfaces.
+site_description: Graph learning for irregular option-implied volatility surfaces.
 site_url: https://ty-cheng.github.io/LoG-IV/
 repo_url: https://github.com/TY-Cheng/LoG-IV
 repo_name: TY-Cheng/LoG-IV
@@ -62,7 +62,7 @@ copyright: Copyright © 2026 LoG-IV
 nav:
   - Home: index.md
   - Results Snapshot: results_snapshot.md
-  - Paper Plan: paper_plan.md
+  - Research Plan: paper_plan.md
   - Data: data.md
   - Benchmark Protocol: benchmark_protocol.md
   - Synthetic Benchmark: synthetic_benchmark.md

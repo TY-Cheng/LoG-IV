@@ -15,7 +15,8 @@ constraints are more than decoration.
 2. Are liquidity, spread, volume, and open interest used as modeling information
    or diagnostics rather than post-hoc explanations?
 3. Are no-arbitrage claims supported by explicit violation metrics?
-4. Are U.S. in-domain, held-out-underlying, and Japan OOD results separated?
+4. Are U.S. in-domain, held-out-underlying, and Japan out-of-distribution
+   results separated?
 5. Are Japanese data limitations described as domain-shift evidence rather than
    brushed aside?
 6. Are baselines strong enough for a graph-learning venue?

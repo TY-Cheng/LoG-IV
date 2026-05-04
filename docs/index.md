@@ -8,17 +8,17 @@ hide:
 ## Documentation Map
 
 - [Results Snapshot](results_snapshot.md): current evidence ledger, expanded data
-  gates, benchmark smoke outputs, and paper-readiness boundaries.
-- [Paper Plan](paper_plan.md): research question, contribution target, execution
-  gates, claim ladder, and paper-facing boundaries.
+  gates, benchmark results, and manuscript-readiness boundaries.
+- [Research Plan](paper_plan.md): research question, contribution target, execution
+  gates, claim ladder, and manuscript-level boundaries.
 - [Data](data.md): source roles, option identifiers, timestamp policy, expanded
-  silver artifacts, IV-inversion assumptions, and U.S./Japan OOD data gates.
+  silver artifacts, IV-inversion assumptions, and U.S./Japan
+  out-of-distribution data gates.
 - [Benchmark Protocol](benchmark_protocol.md): fixed splits, masked
   reconstruction, train-only baselines, leakage controls, regularizers, seeds,
   and acceptance rules.
-- [Synthetic Benchmark](synthetic_benchmark.md): public Synthetic-LoG-IV
-  generator contract, oracle fields, stable hashing, and clean-surface
-  diagnostics.
+- [Synthetic Benchmark](synthetic_benchmark.md): synthetic data generator,
+  diagnostic-only fields, stable hashing, and clean-surface diagnostics.
 - [Graph](graph.md): option-token nodes, edge families, liquidity weights,
   masking semantics, and decoded-price no-arbitrage hooks.
 - [Development Audit Prompt](audit/development_audit_prompt.md): code and data
@@ -32,10 +32,11 @@ hide:
 
 1. Start with the [Results Snapshot](results_snapshot.md) to see what evidence
    currently exists.
-2. Use the [Paper Plan](paper_plan.md) as the research contract.
-3. Read [Data](data.md) before changing ingestion, IV inversion, or OOD scope.
+2. Use the [Research Plan](paper_plan.md) as the current research contract.
+3. Read [Data](data.md) before changing ingestion, IV inversion, or
+   out-of-distribution scope.
 4. Read [Benchmark Protocol](benchmark_protocol.md) before changing train/test
-   splits, baseline definitions, or paper-facing metrics.
+   splits, baseline definitions, or manuscript-level metrics.
 5. Read [Synthetic Benchmark](synthetic_benchmark.md) before changing public
    synthetic fixtures or oracle diagnostics.
 6. Read [Graph](graph.md) before changing node features, edge construction, or

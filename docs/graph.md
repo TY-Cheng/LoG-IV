@@ -11,7 +11,7 @@ Each node is one option token:
 v_j = (market, underlying, observation_date, expiry, strike, option_type)
 ```
 
-Core node features:
+Core node variables:
 
 - log moneyness, preferably `log(K / F)`;
 - tenor in years;
@@ -23,9 +23,9 @@ Core node features:
 - missingness and stale-quote masks;
 - masked-target visibility flag for masked reconstruction tasks.
 
-Model inputs should preserve liquidity fields instead of using them only for
-filtering. Low-liquidity quotes may be noisy but are part of the graph-domain
-shift problem.
+Model inputs should preserve liquidity fields on visible nodes instead of using
+them only for filtering. Low-liquidity quotes may be noisy, but this noise is
+part of the evaluation problem.
 
 ## Edge Families
 
@@ -58,7 +58,7 @@ Edge weights should be explicit. Candidate components:
 Do not silently drop edge weights after construction. The current PyG operator
 attaches edge weights to edge stores, consumes them through an incoming-edge
 gate, and uses them in the smoothness regularizer. Run manifests record this as
-an engineering implementation detail, not as paper evidence.
+an implementation detail, not as empirical evidence.
 
 ## Masking Semantics
 
@@ -75,7 +75,7 @@ graph construction.
 
 ## No-Arbitrage Hooks
 
-No-arbitrage checks are diagnostics at initialization. Candidate checks:
+No-arbitrage checks are diagnostics at this stage. Candidate checks:
 
 - call price nonincreasing in strike;
 - put price nondecreasing in strike;
@@ -87,8 +87,9 @@ No-arbitrage checks are diagnostics at initialization. Candidate checks:
 For benchmark protocol runs, training uses only decoded Black-forward calendar
 total-variance and strike-convexity penalties where enough same-surface nodes
 exist. Embedding-distance put-call parity and embedding-norm convexity proxies
-are not paper-facing regularizers. Put-call parity remains a post-run diagnostic
-until rate, dividend, and forward assumptions are explicit.
+are not manuscript-level regularizers. Put-call parity remains a post-run
+diagnostic until rate, dividend, and forward assumptions are explicit.
 
-Paper-facing no-arbitrage diagnostics must be reported separately from training
-regularizer loss and must compare true-IV and predicted-IV decoded prices.
+Manuscript-level no-arbitrage diagnostics must be reported separately from
+training regularizer loss and must compare true-IV and predicted-IV decoded
+prices.
