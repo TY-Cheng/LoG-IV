@@ -272,6 +272,23 @@ current scalar liquidity gate, heteroscedastic-loss-only, reliability-gated
 decoder, and full heteroscedastic configurations. The full research claim still
 requires A1/A2 runs; the registry only makes the ablations auditable.
 
+The repo also exposes related-work proxy variants through
+`variant_suite=anchor_proxy`. These include proxies for Deep Smoothing,
+Operator Deep Smoothing, Hexagon-Net, HyperIV, and sparse-quote neural-process
+style completion, plus a native CNP baseline. The implemented backbones are:
+fixed-grid CNN smoothing, continuous-coordinate kernel operator smoothing,
+heterogeneous edge-family attention with a lightweight cross-view alignment
+loss, attentive neural-process context modeling, and a HyperIV-positioning
+proxy. They are useful for unified-protocol
+comparison, but they must be described as faithful-spirit baselines rather than
+paper reproductions unless the corresponding external implementation, training
+objective, data assumptions, and evaluation protocol are matched and validated.
+
+For HyperIV specifically, the repo provides a `hyperiv-compare` command that
+records or runs an external-code adapter manifest. The native
+`anchor_hyperiv_proxy` does not claim hard no-arbitrage guarantees or real-time
+hypernetwork behavior.
+
 ## Metrics
 
 Headline metrics:
@@ -293,6 +310,35 @@ Supporting diagnostics:
 - out-of-distribution degradation from U.S. to Japan or held-out tickers;
 - sensitivity to seed and training length.
 
+Required real-data diagnostics:
+
+- reliability ranking: Spearman or Kendall rank correlation between predicted
+  precision and held-out absolute error on masked nodes;
+- predicted-reliability buckets: masked IV MAE, normalized price MAE, and NLL by
+  predicted precision bucket;
+- liquidity buckets: masked IV MAE and heteroscedastic NLL by spread, volume,
+  and open-interest bucket;
+- interval diagnostics, if predictive intervals are emitted: empirical
+  coverage and average interval width by liquidity bucket.
+
+These diagnostics are mandatory for any claim that LAGOS-Hetero treats
+liquidity as observation reliability. Lower MAE alone is not sufficient evidence
+for the heteroscedastic interpretation.
+
+Required graph-necessity ablations:
+
+- no-edge set/context model;
+- liquidity-as-feature-only GNN;
+- scalar-gate GNN;
+- random-edge or shuffled-edge GNN using the same node features;
+- ODS-style continuous-coordinate operator without liquidity reliability.
+
+These ablations are mandatory for any claim that graph structure contributes
+beyond node features, set aggregation, or generic coordinate smoothing.
+Synthetic prior pretraining is not required for the main real-data claim; it
+should remain an appendix or future-work item unless it improves real-data
+generalization without weakening the benchmark framing.
+
 ## Reviewer Risk Register
 
 Likely LoG reviewer concerns:
@@ -310,6 +356,11 @@ Likely LoG reviewer concerns:
   and timestamp semantics are not documented.
 - No-arbitrage claims may be rejected if convexity or calendar diagnostics are
   worse than strong baselines.
+- The heteroscedastic contribution may be rejected if predicted precision does
+  not rank realized errors or improve low-liquidity buckets.
+- The graph contribution may be rejected if no-edge, shuffled-edge, or
+  continuous-coordinate baselines perform similarly under the same masked
+  reconstruction protocol.
 
 Mitigations:
 

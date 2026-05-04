@@ -98,14 +98,41 @@ after masking, but never masked quote fields:
 - `within_surface_knn_moneyness_tenor`;
 - `within_surface_local_linear`;
 - `within_surface_rbf`;
-- `within_surface_svi_raw_per_expiry`.
+- `within_surface_svi_raw_per_expiry`;
+- `within_surface_svi_constrained_per_expiry`;
+- `within_surface_svi_calendar_projection`;
+- `within_surface_ssvi_calendar_constrained`;
+- `within_surface_rbf_calendar_projection`.
 
-Raw SVI per-expiry is intentionally the only P0 SVI family member. It uses
+Raw SVI per-expiry remains the primary classical calibration baseline. It uses
 bounded optimization with a per-slice wall-clock limit and max-iteration limit.
-Underidentified slices, optimizer failures, and timeouts are recorded directly;
-there is no silent fallback in the raw SVI baseline. Constrained SVI, SSVI,
-no-arbitrage projection, LightGBM, graph Laplacian, standard GCN/GAT, DeepSets,
-Set Transformer, and no-arb neural projection are P1 until `data_v1` passes.
+Underidentified slices, optimizer failures, constraint failures, and timeouts
+are recorded directly; there is no silent fallback. The constrained and
+projected variants are explicit rows, not replacements for raw SVI. The
+calendar-projection rows enforce total-variance monotonicity only and should not
+be described as full static-arbitrage repair.
+
+The CLI also exposes an `anchor_proxy` variant suite for related-work
+orientation. These variants are faithful-spirit baselines for the relevant
+method family, not external-paper reproductions:
+
+- `anchor_deep_smoothing_proxy`: fixed-grid CNN smoother with decoded
+  no-arbitrage regularization;
+- `anchor_operator_deep_smoothing_proxy`: continuous-coordinate kernel operator
+  over visible option tokens, without liquidity reliability modeling;
+- `anchor_hexagon_proxy`: heterogeneous edge-family attention over same-expiry,
+  same-strike, near-moneyness, near-tenor, put-call, and liquidity-bucket
+  relations, with a lightweight cross-view alignment loss;
+- `anchor_hyperiv_proxy`: fixed-grid neural smoother with decoded
+  no-arbitrage regularization, without hypernetwork or hard guarantees;
+- `anchor_volnp_proxy`: attentive neural-process-style visible-context baseline
+  for sparse-quote completion;
+- `cnp_baseline`: permutation-invariant conditional neural process baseline.
+
+Runs using these variants record `anchor_reference`, `implementation_status`,
+and `implementation_notes` in `manifest.json`. HyperIV is additionally supported
+through `hyperiv-compare`, which records or runs an external adapter manifest;
+the native proxy is not a hard-arbitrage hypernetwork.
 
 The moneyness-tenor kNN baseline is the current lower bound. A GNN result that
 beats only the global mean is not enough for a LoG claim. A manuscript-level
@@ -145,6 +172,7 @@ Each benchmark run should write:
 - `baselines_summary.csv`;
 - `diagnostic_leakage_prone_baselines.csv`;
 - `diagnostics_price.json`;
+- `diagnostics_reliability.json`;
 - `diagnostics_no_arbitrage.json`.
 
 The aggregate command writes `benchmark_summary.csv` with seed-level means and
@@ -186,9 +214,23 @@ Supporting scorecards should report:
 - risk-neutral-density roughness diagnostics only for synthetic or
   European-style index-option subsets where the Europeanized assumptions are
   defensible;
+- reliability calibration on held-out masked nodes: predicted precision versus
+  realized absolute error rank correlation; masked IV MAE, normalized price MAE,
+  and NLL by predicted-reliability bucket; liquidity-bucket NLL and MAE by
+  spread, volume, and open-interest bucket; and prediction-interval coverage if
+  intervals are emitted;
+- graph-necessity ablations: no-edge set/context model, liquidity-as-feature-only
+  GNN, scalar-gate GNN, random-edge or shuffled-edge GNN, and ODS-style
+  continuous-coordinate operator without liquidity reliability;
 - performance degradation under distribution shift, normalized against a naive
   train-only baseline rather than a raw out-of-distribution/in-distribution MAE
   ratio.
+
+Reliability calibration and graph-necessity ablations are required for
+manuscript-level heteroscedastic-graph claims. Synthetic prior pretraining is
+optional and should not be promoted to the main real-data claim unless it
+improves real-data generalization under the same fixed split and masking
+protocol.
 
 For U.S. single-name and ETF options, decoded no-arbitrage outputs are
 Europeanized surface-geometry diagnostics. Strict static-arbitrage claims are
@@ -208,6 +250,10 @@ A result can be discussed as manuscript-level evidence only when:
 - training length is long enough for model comparison, not only a pipeline check;
 - the graph model beats the relevant within-surface kNN/interpolation baseline;
 - raw SVI per-expiry failure accounting is present;
+- reliability calibration shows that predicted precision ranks realized
+  held-out errors or improves low-reliability buckets;
+- graph-necessity ablations show that the result is not explained by no-edge
+  set aggregation, liquidity features alone, or shuffled/random graph structure;
 - decoded-price and no-arbitrage diagnostics do not undermine the scalar metric.
 
 Until then, results should be labeled diagnostic.

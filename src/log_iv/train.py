@@ -57,6 +57,10 @@ class TrainingConfig:
     n_encoder_layers: int = 3
     n_gnn_layers: int = 3
     model_kind: str = "gnn"
+    graph_style: str = "default"
+    anchor_reference: str = ""
+    implementation_status: str = "native"
+    implementation_notes: str = ""
     use_fourier: bool = True
     use_attention: bool = True
 
@@ -75,6 +79,9 @@ class TrainingConfig:
     heteroscedastic_weight: float = 0.0
     reliability_gate_weight: float = 0.0
     reliability_epsilon: float = 1e-4
+    cross_view_alignment_weight: float = 0.0
+    operator_bandwidth: float = 0.15
+    grid_size: int = 32
     greeks_weight: float = 0.0
     no_arb_weight: float = 1.0
     smoothness_weight: float = 0.1
@@ -205,23 +212,216 @@ def _surface_id(surface: Any, fallback: str) -> str:
     return surface.surface_id if isinstance(surface, SurfaceData) else fallback
 
 
-_GRAPH_CACHE: dict[tuple[int, int, int], Any] = {}
+_GRAPH_CACHE: dict[tuple[int, int, int, str], Any] = {}
 
 
 def _cached_option_surface_graph(
     quotes: list[OptionQuote],
     *,
     similarity_edges_per_node: int,
+    graph_style: str = "default",
 ) -> Any:
-    key = (id(quotes), len(quotes), similarity_edges_per_node)
+    key = (id(quotes), len(quotes), similarity_edges_per_node, graph_style)
     graph = _GRAPH_CACHE.get(key)
     if graph is None:
         graph = build_option_surface_graph(
             quotes,
             similarity_edges_per_node=similarity_edges_per_node,
+            graph_style=graph_style,
         )
         _GRAPH_CACHE[key] = graph
     return graph
+
+
+class ContinuousKernelOperator(nn.Module):
+    """Coordinate-kernel operator baseline for irregular option observations."""
+
+    def __init__(self, d_model: int, bandwidth: float = 0.15, dropout: float = 0.1):
+        super().__init__()
+        self.log_bandwidth = nn.Parameter(torch.tensor(float(math.log(max(bandwidth, 1e-4)))))
+        self.value_proj = nn.Linear(d_model, d_model)
+        self.update = nn.Sequential(
+            nn.Linear(d_model * 2, d_model),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_model, d_model),
+        )
+        self.norm = nn.LayerNorm(d_model)
+
+    def forward(
+        self,
+        embeddings: torch.Tensor,
+        geom: torch.Tensor,
+        observed_flags: torch.Tensor,
+    ) -> tuple[torch.Tensor, list[torch.Tensor]]:
+        if embeddings.numel() == 0:
+            return embeddings, []
+        source_mask = observed_flags.bool()
+        if not bool(source_mask.any().item()):
+            source_mask = torch.ones_like(source_mask, dtype=torch.bool)
+        src_h = self.value_proj(embeddings[source_mask])
+        src_geom = geom[source_mask]
+        query_geom = geom
+        scale = torch.tensor([1.0, 1.0, 0.25], device=geom.device, dtype=geom.dtype)
+        diff = (query_geom[:, None, :] - src_geom[None, :, :]) * scale
+        dist2 = diff.square().sum(dim=-1)
+        bandwidth2 = self.log_bandwidth.exp().square().clamp_min(1e-6)
+        weights = torch.softmax(-0.5 * dist2 / bandwidth2, dim=-1)
+        context = weights @ src_h
+        updated = self.norm(embeddings + self.update(torch.cat([embeddings, context], dim=-1)))
+        return updated, [updated]
+
+
+class SemanticHeteroAttentionOperator(nn.Module):
+    """Heterogeneous edge-family attention baseline with semantic-level fusion."""
+
+    def __init__(self, d_model: int, dropout: float = 0.1):
+        super().__init__()
+        self.last_alignment_loss: torch.Tensor | None = None
+        self.message_proj = nn.Linear(d_model, d_model)
+        self.self_proj = nn.Linear(d_model, d_model)
+        self.semantic_score = nn.Sequential(
+            nn.Linear(d_model, d_model),
+            nn.Tanh(),
+            nn.Linear(d_model, 1),
+        )
+        self.update = nn.Sequential(
+            nn.Linear(d_model * 2, d_model),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_model, d_model),
+        )
+        self.norm = nn.LayerNorm(d_model)
+
+    def forward(
+        self, embeddings: torch.Tensor, hetero_data: Any
+    ) -> tuple[torch.Tensor, list[torch.Tensor]]:
+        if embeddings.numel() == 0:
+            return embeddings, []
+        outputs: list[torch.Tensor] = []
+        for edge_type in hetero_data.edge_types:
+            edge_store = hetero_data[edge_type]
+            edge_index = edge_store.edge_index
+            if edge_index.numel() == 0:
+                continue
+            src, dst = edge_index[0], edge_index[1]
+            msg = self.message_proj(embeddings[src])
+            weight = getattr(edge_store, "edge_weight", None)
+            if weight is not None:
+                msg = msg * weight.reshape(-1, 1).to(msg.device)
+            aggregated = torch.zeros_like(embeddings)
+            degree = torch.zeros(embeddings.size(0), 1, device=embeddings.device)
+            aggregated.index_add_(0, dst, msg)
+            degree.index_add_(0, dst, torch.ones(msg.size(0), 1, device=embeddings.device))
+            outputs.append(aggregated / degree.clamp_min(1.0))
+        if not outputs:
+            context = torch.zeros_like(embeddings)
+            self.last_alignment_loss = embeddings.new_tensor(0.0)
+        else:
+            stack = torch.stack(outputs, dim=1)
+            pooled = stack.mean(dim=0)
+            semantic_weights = torch.softmax(self.semantic_score(pooled).squeeze(-1), dim=0)
+            context = (stack * semantic_weights.reshape(1, -1, 1)).sum(dim=1)
+            self.last_alignment_loss = (stack - context.unsqueeze(1)).square().mean()
+        base = self.self_proj(embeddings)
+        updated = self.norm(embeddings + self.update(torch.cat([base, context], dim=-1)))
+        return updated, [updated]
+
+
+class ConditionalNeuralProcessBlock(nn.Module):
+    """CNP/ANP-style visible-context encoder and query decoder."""
+
+    def __init__(self, d_model: int, *, attentive: bool = False, dropout: float = 0.1):
+        super().__init__()
+        self.attentive = attentive
+        self.context_proj = nn.Sequential(
+            nn.Linear(d_model, d_model),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_model, d_model),
+        )
+        self.query_proj = nn.Linear(d_model, d_model)
+        self.key_proj = nn.Linear(d_model, d_model)
+        self.value_proj = nn.Linear(d_model, d_model)
+        self.update = nn.Sequential(
+            nn.Linear(d_model * 2, d_model),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_model, d_model),
+        )
+        self.norm = nn.LayerNorm(d_model)
+
+    def forward(
+        self, embeddings: torch.Tensor, observed_flags: torch.Tensor
+    ) -> tuple[torch.Tensor, list[torch.Tensor]]:
+        source_mask = observed_flags.bool()
+        if not bool(source_mask.any().item()):
+            source_mask = torch.ones_like(source_mask, dtype=torch.bool)
+        context_source = self.context_proj(embeddings[source_mask])
+        if self.attentive:
+            q = self.query_proj(embeddings)
+            k = self.key_proj(context_source)
+            v = self.value_proj(context_source)
+            weights = torch.softmax(q @ k.T / math.sqrt(max(q.size(-1), 1)), dim=-1)
+            context = weights @ v
+        else:
+            context = context_source.mean(dim=0, keepdim=True).expand_as(embeddings)
+        updated = self.norm(embeddings + self.update(torch.cat([embeddings, context], dim=-1)))
+        return updated, [updated]
+
+
+class GridCNNOperator(nn.Module):
+    """Fixed-grid CNN baseline: rasterize visible tokens, smooth on grid, sample back."""
+
+    def __init__(self, d_model: int, grid_size: int = 32, dropout: float = 0.1):
+        super().__init__()
+        self.grid_size = int(grid_size)
+        self.grid_encoder = nn.Sequential(
+            nn.Conv2d(d_model, d_model, kernel_size=3, padding=1),
+            nn.GELU(),
+            nn.Dropout2d(dropout),
+            nn.Conv2d(d_model, d_model, kernel_size=3, padding=1),
+            nn.GELU(),
+            nn.Conv2d(d_model, d_model, kernel_size=1),
+        )
+        self.norm = nn.LayerNorm(d_model)
+
+    def forward(
+        self,
+        embeddings: torch.Tensor,
+        geom: torch.Tensor,
+        observed_flags: torch.Tensor,
+    ) -> tuple[torch.Tensor, list[torch.Tensor]]:
+        n_nodes, d_model = embeddings.shape
+        if n_nodes == 0:
+            return embeddings, []
+        grid_size = max(self.grid_size, 4)
+        x_coord = geom[:, 0]
+        y_coord = torch.log1p(geom[:, 1].clamp_min(0.0))
+        x_norm = _minmax_unit(x_coord)
+        y_norm = _minmax_unit(y_coord)
+        ix = (x_norm * (grid_size - 1)).round().long().clamp(0, grid_size - 1)
+        iy = (y_norm * (grid_size - 1)).round().long().clamp(0, grid_size - 1)
+        visible = observed_flags.bool()
+        if not bool(visible.any().item()):
+            visible = torch.ones_like(visible, dtype=torch.bool)
+        grid = embeddings.new_zeros(1, d_model, grid_size, grid_size)
+        count = embeddings.new_zeros(1, 1, grid_size, grid_size)
+        for node_idx in torch.where(visible)[0].tolist():
+            grid[0, :, iy[node_idx], ix[node_idx]] += embeddings[node_idx]
+            count[0, :, iy[node_idx], ix[node_idx]] += 1.0
+        grid = grid / count.clamp_min(1.0)
+        smoothed = self.grid_encoder(grid)
+        sampled = smoothed[0, :, iy, ix].T
+        updated = self.norm(embeddings + sampled)
+        return updated, [updated]
+
+
+def _minmax_unit(values: torch.Tensor) -> torch.Tensor:
+    span = values.max() - values.min()
+    if not bool(torch.isfinite(span).item()) or float(span.item()) <= 1e-12:
+        return torch.zeros_like(values)
+    return (values - values.min()) / span.clamp_min(1e-12)
 
 
 class OptionTokenGNN(nn.Module):
@@ -236,10 +436,26 @@ class OptionTokenGNN(nn.Module):
     def __init__(self, config: TrainingConfig):
         super().__init__()
         self.config = cfg = config
-        if cfg.model_kind not in {"gnn", "encoder_mlp"}:
-            msg = "model_kind must be one of: gnn, encoder_mlp"
+        valid_model_kinds = {
+            "gnn",
+            "encoder_mlp",
+            "set_context_mlp",
+            "ods_operator",
+            "hexagon_attention",
+            "cnp",
+            "anp",
+            "grid_cnn",
+        }
+        if cfg.model_kind not in valid_model_kinds:
+            msg = f"model_kind must be one of: {sorted(valid_model_kinds)}"
             raise ValueError(msg)
         self.use_gnn = cfg.model_kind == "gnn" and cfg.n_gnn_layers > 0
+        self.use_set_context = cfg.model_kind == "set_context_mlp"
+        self.use_ods_operator = cfg.model_kind == "ods_operator"
+        self.use_hexagon_attention = cfg.model_kind == "hexagon_attention"
+        self.use_cnp = cfg.model_kind == "cnp"
+        self.use_anp = cfg.model_kind == "anp"
+        self.use_grid_cnn = cfg.model_kind == "grid_cnn"
 
         self.encoder = OptionTokenEncoder(
             d_geom=cfg.d_geom,
@@ -261,6 +477,34 @@ class OptionTokenGNN(nn.Module):
             )
             if self.use_gnn
             else None
+        )
+        self.set_context_proj = (
+            nn.Sequential(
+                nn.Linear(cfg.d_model * 2, cfg.d_model),
+                nn.GELU(),
+                nn.Dropout(cfg.dropout),
+                nn.Linear(cfg.d_model, cfg.d_model),
+            )
+            if self.use_set_context
+            else None
+        )
+        self.ods_operator = (
+            ContinuousKernelOperator(cfg.d_model, cfg.operator_bandwidth, cfg.dropout)
+            if self.use_ods_operator
+            else None
+        )
+        self.hexagon_operator = (
+            SemanticHeteroAttentionOperator(cfg.d_model, cfg.dropout)
+            if self.use_hexagon_attention
+            else None
+        )
+        self.neural_process = (
+            ConditionalNeuralProcessBlock(cfg.d_model, attentive=self.use_anp, dropout=cfg.dropout)
+            if self.use_cnp or self.use_anp
+            else None
+        )
+        self.grid_cnn = (
+            GridCNNOperator(cfg.d_model, cfg.grid_size, cfg.dropout) if self.use_grid_cnn else None
         )
 
         self.regularizer = NoArbitrageRegularizer(
@@ -309,6 +553,13 @@ class OptionTokenGNN(nn.Module):
         # Encode
         enc_out = self.encoder(geom, price, liq)
         node_embeddings = enc_out["h"]
+        if self.use_set_context and self.set_context_proj is not None:
+            observed_mask = torch.tensor(observed_flags, dtype=torch.bool, device=device)
+            context_source = node_embeddings[observed_mask]
+            if context_source.numel() == 0:
+                context_source = node_embeddings
+            context = context_source.mean(dim=0, keepdim=True).expand_as(node_embeddings)
+            node_embeddings = self.set_context_proj(torch.cat([node_embeddings, context], dim=-1))
         input_log_precision = self.reliability_head(node_embeddings).clamp(-8.0, 8.0)
         message_embeddings = _reliability_gated_embeddings(
             node_embeddings,
@@ -320,10 +571,77 @@ class OptionTokenGNN(nn.Module):
         graph = _cached_option_surface_graph(
             input_quotes,
             similarity_edges_per_node=self.config.similarity_edges_per_node,
+            graph_style=self.config.graph_style,
         )
         hetero_data = build_hetero_data_from_graph(input_quotes, message_embeddings, graph, device)
+        cross_view_alignment_loss = node_embeddings.new_tensor(0.0)
 
-        if self.use_gnn and self.gnn is not None:
+        if self.use_ods_operator and self.ods_operator is not None:
+            observed_tensor = torch.tensor(observed_flags, dtype=torch.bool, device=device)
+            refined_embeddings, layer_outputs = self.ods_operator(
+                message_embeddings, geom, observed_tensor
+            )
+            surface_embedding = refined_embeddings.mean(dim=0)
+            log_precision = self.reliability_head(refined_embeddings).clamp(-8.0, 8.0)
+            decode_embeddings = _reliability_gated_embeddings(
+                refined_embeddings,
+                log_precision,
+                self.config.reliability_gate_weight,
+            )
+            iv_pred = self.encoder.iv_head(decode_embeddings)
+            geom_recon_g = self.encoder.geom_head(decode_embeddings)
+            liq_recon_g = self.encoder.liquidity_head(decode_embeddings)
+            greeks_pred_g = self.encoder.greeks_head(decode_embeddings)
+        elif self.use_hexagon_attention and self.hexagon_operator is not None:
+            refined_embeddings, layer_outputs = self.hexagon_operator(
+                message_embeddings, hetero_data
+            )
+            if self.hexagon_operator.last_alignment_loss is not None:
+                cross_view_alignment_loss = self.hexagon_operator.last_alignment_loss
+            surface_embedding = refined_embeddings.mean(dim=0)
+            log_precision = self.reliability_head(refined_embeddings).clamp(-8.0, 8.0)
+            decode_embeddings = _reliability_gated_embeddings(
+                refined_embeddings,
+                log_precision,
+                self.config.reliability_gate_weight,
+            )
+            iv_pred = self.encoder.iv_head(decode_embeddings)
+            geom_recon_g = self.encoder.geom_head(decode_embeddings)
+            liq_recon_g = self.encoder.liquidity_head(decode_embeddings)
+            greeks_pred_g = self.encoder.greeks_head(decode_embeddings)
+        elif self.neural_process is not None:
+            observed_tensor = torch.tensor(observed_flags, dtype=torch.bool, device=device)
+            refined_embeddings, layer_outputs = self.neural_process(
+                message_embeddings, observed_tensor
+            )
+            surface_embedding = refined_embeddings.mean(dim=0)
+            log_precision = self.reliability_head(refined_embeddings).clamp(-8.0, 8.0)
+            decode_embeddings = _reliability_gated_embeddings(
+                refined_embeddings,
+                log_precision,
+                self.config.reliability_gate_weight,
+            )
+            iv_pred = self.encoder.iv_head(decode_embeddings)
+            geom_recon_g = self.encoder.geom_head(decode_embeddings)
+            liq_recon_g = self.encoder.liquidity_head(decode_embeddings)
+            greeks_pred_g = self.encoder.greeks_head(decode_embeddings)
+        elif self.use_grid_cnn and self.grid_cnn is not None:
+            observed_tensor = torch.tensor(observed_flags, dtype=torch.bool, device=device)
+            refined_embeddings, layer_outputs = self.grid_cnn(
+                message_embeddings, geom, observed_tensor
+            )
+            surface_embedding = refined_embeddings.mean(dim=0)
+            log_precision = self.reliability_head(refined_embeddings).clamp(-8.0, 8.0)
+            decode_embeddings = _reliability_gated_embeddings(
+                refined_embeddings,
+                log_precision,
+                self.config.reliability_gate_weight,
+            )
+            iv_pred = self.encoder.iv_head(decode_embeddings)
+            geom_recon_g = self.encoder.geom_head(decode_embeddings)
+            liq_recon_g = self.encoder.liquidity_head(decode_embeddings)
+            greeks_pred_g = self.encoder.greeks_head(decode_embeddings)
+        elif self.use_gnn and self.gnn is not None:
             # GNN forward
             gnn_liquidity = liq if self.config.use_liquidity_gate else None
             gnn_out = self.gnn(message_embeddings, hetero_data, gnn_liquidity)
@@ -375,6 +693,7 @@ class OptionTokenGNN(nn.Module):
             "target_quotes": target_quotes,
             "hetero_data": hetero_data,
             "layer_outputs": layer_outputs,
+            "cross_view_alignment_loss": cross_view_alignment_loss,
         }
 
     def forward(
@@ -428,6 +747,7 @@ def compute_losses(
     total_greeks = torch.tensor(0.0, device=device)
     total_no_arb = torch.tensor(0.0, device=device)
     total_smoothness = torch.tensor(0.0, device=device)
+    total_cross_view_alignment = torch.tensor(0.0, device=device)
 
     for out in batch_outputs:
         # IV reconstruction: decode masked/observed targets without leaking masked IV inputs.
@@ -494,6 +814,11 @@ def compute_losses(
         )
         total_smoothness = total_smoothness + sm_loss
 
+        if config.cross_view_alignment_weight != 0:
+            total_cross_view_alignment = total_cross_view_alignment + out.get(
+                "cross_view_alignment_loss", torch.tensor(0.0, device=device)
+            )
+
     # Average over batch
     n = max(B, 1)
     losses = {
@@ -504,6 +829,7 @@ def compute_losses(
         "greeks": total_greeks / n,
         "no_arb": total_no_arb / n,
         "smoothness": total_smoothness / n,
+        "cross_view_alignment": total_cross_view_alignment / n,
     }
 
     # Contrastive loss: across surfaces
@@ -529,6 +855,7 @@ def compute_losses(
         + config.greeks_weight * losses["greeks"]
         + config.no_arb_weight * losses["no_arb"]
         + config.smoothness_weight * losses["smoothness"]
+        + config.cross_view_alignment_weight * losses["cross_view_alignment"]
         + config.contrastive_weight * losses["contrastive"]
     )
     losses["total"] = total_loss
@@ -1468,6 +1795,21 @@ def _prediction_frame(
         out = model.encode_graph(surface, device)
         pred = out["iv_pred"].squeeze(-1).detach().cpu().numpy()
         true = out["target_price"][:, 0].detach().cpu().numpy()
+        log_precision_tensor = out.get("log_precision")
+        if log_precision_tensor is not None:
+            log_precision = log_precision_tensor.squeeze(-1).detach().cpu().numpy()
+            precision = (
+                np.logaddexp(log_precision.astype(float), 0.0) + model.config.reliability_epsilon
+            )
+            sigma = 1.0 / np.sqrt(np.maximum(precision, model.config.reliability_epsilon))
+            lower_90 = pred - 1.6448536269514722 * sigma
+            upper_90 = pred + 1.6448536269514722 * sigma
+        else:
+            log_precision = np.full_like(pred, np.nan, dtype=float)
+            precision = np.full_like(pred, np.nan, dtype=float)
+            sigma = np.full_like(pred, np.nan, dtype=float)
+            lower_90 = np.full_like(pred, np.nan, dtype=float)
+            upper_90 = np.full_like(pred, np.nan, dtype=float)
         surface_id = (
             surface_ids[surface_index]
             if surface_ids is not None and surface_index < len(surface_ids)
@@ -1489,6 +1831,16 @@ def _prediction_frame(
                     "iv_true": float(true[node_index]),
                     "iv_pred": float(pred[node_index]),
                     "abs_error": float(abs(pred[node_index] - true[node_index])),
+                    "log_precision_pred": float(log_precision[node_index]),
+                    "precision_pred": float(precision[node_index]),
+                    "sigma_pred": float(sigma[node_index]),
+                    "iv_pred_lower_90": float(lower_90[node_index]),
+                    "iv_pred_upper_90": float(upper_90[node_index]),
+                    "iv_pred_interval_90_contains": bool(
+                        lower_90[node_index] <= true[node_index] <= upper_90[node_index]
+                    )
+                    if np.isfinite(lower_90[node_index]) and np.isfinite(upper_90[node_index])
+                    else False,
                     "is_masked_target": bool(target_mask[node_index]),
                     "input_target_visible": bool(not target_mask[node_index]),
                     "bid": float(quote.bid) if quote.bid is not None else np.nan,
@@ -1509,6 +1861,168 @@ def _prediction_frame(
                 }
             )
     return pd.DataFrame(rows)
+
+
+def _reliability_diagnostics(predictions: pd.DataFrame) -> dict[str, Any]:
+    """Summarize whether predicted quote precision ranks held-out errors."""
+
+    if predictions.empty:
+        return {"metadata": {"row_count": 0, "eval_scope": "empty"}}
+    required = {"iv_true", "iv_pred", "precision_pred"}
+    if not required.issubset(predictions.columns):
+        return {
+            "metadata": {
+                "row_count": 0,
+                "eval_scope": "missing_precision_columns",
+                "missing_columns": sorted(required - set(predictions.columns)),
+            }
+        }
+
+    frame = predictions.copy()
+    eval_scope = "all_nodes"
+    if "is_masked_target" in frame and frame["is_masked_target"].astype(bool).any():
+        frame = frame[frame["is_masked_target"].astype(bool)].copy()
+        eval_scope = "masked_nodes"
+    frame["abs_error"] = (frame["iv_pred"].astype(float) - frame["iv_true"].astype(float)).abs()
+    frame = frame[
+        frame[["iv_true", "iv_pred", "precision_pred", "abs_error"]]
+        .replace([np.inf, -np.inf], np.nan)
+        .notna()
+        .all(axis=1)
+    ].copy()
+    if frame.empty:
+        return {"metadata": {"row_count": 0, "eval_scope": eval_scope}}
+
+    precision = frame["precision_pred"].astype(float).clip(lower=1e-12)
+    error = frame["iv_pred"].astype(float) - frame["iv_true"].astype(float)
+    frame["heteroscedastic_nll"] = 0.5 * (
+        precision.to_numpy() * np.square(error.to_numpy()) - np.log(precision.to_numpy())
+    )
+    frame["normalized_price_abs_error"] = [
+        _normalized_price_abs_error(row) for _, row in frame.iterrows()
+    ]
+
+    spearman = frame["precision_pred"].corr(frame["abs_error"], method="spearman")
+    kendall = frame["precision_pred"].corr(frame["abs_error"], method="kendall")
+    rank_metrics = {
+        "precision_abs_error_spearman": _json_float(spearman),
+        "precision_abs_error_kendall": _json_float(kendall),
+        "reliability_error_rank_score": _json_float(-spearman)
+        if np.isfinite(float(spearman))
+        else np.nan,
+    }
+
+    diagnostics: dict[str, Any] = {
+        "metadata": {
+            "row_count": int(len(frame)),
+            "eval_scope": eval_scope,
+            "interval_source": "sigma_pred_from_precision",
+        },
+        "rank_metrics": rank_metrics,
+        "predicted_reliability_buckets": _bucket_error_table(
+            frame,
+            "precision_pred",
+            bucket_prefix="precision_q",
+        ),
+        "liquidity_buckets": {
+            "spread": _bucket_error_table(frame, "spread", bucket_prefix="spread_q"),
+            "volume": _bucket_error_table(frame, "volume", bucket_prefix="volume_q"),
+            "open_interest": _bucket_error_table(
+                frame,
+                "open_interest",
+                bucket_prefix="oi_q",
+            ),
+        },
+    }
+    if {"iv_pred_lower_90", "iv_pred_upper_90"}.issubset(frame.columns):
+        lower = frame["iv_pred_lower_90"].astype(float)
+        upper = frame["iv_pred_upper_90"].astype(float)
+        valid = lower.notna() & upper.notna() & np.isfinite(lower) & np.isfinite(upper)
+        if valid.any():
+            contains = (lower[valid] <= frame.loc[valid, "iv_true"].astype(float)) & (
+                frame.loc[valid, "iv_true"].astype(float) <= upper[valid]
+            )
+            diagnostics["interval_90"] = {
+                "coverage": float(contains.mean()),
+                "average_width": float((upper[valid] - lower[valid]).mean()),
+                "count": int(valid.sum()),
+            }
+    return diagnostics
+
+
+def _json_float(value: Any) -> float:
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return float("nan")
+    return result if np.isfinite(result) else float("nan")
+
+
+def _normalized_price_abs_error(row: pd.Series) -> float:
+    reference = _reference_price(row)
+    strike = float(row.get("strike", np.nan))
+    tenor = float(row.get("tenor_years", np.nan))
+    true_iv = float(row.get("iv_true", np.nan))
+    pred_iv = float(row.get("iv_pred", np.nan))
+    if not all(np.isfinite(value) for value in (reference, strike, tenor, true_iv, pred_iv)):
+        return float("nan")
+    if reference <= 0 or strike <= 0 or tenor < 0:
+        return float("nan")
+    option_type = str(row.get("option_type", "C"))
+    true_price = _black_forward_price(
+        option_type=option_type,
+        forward=reference,
+        strike=strike,
+        tenor_years=tenor,
+        sigma=max(true_iv, 1e-8),
+    )
+    pred_price = _black_forward_price(
+        option_type=option_type,
+        forward=reference,
+        strike=strike,
+        tenor_years=tenor,
+        sigma=max(pred_iv, 1e-8),
+    )
+    return float(abs(pred_price - true_price) / max(reference, 1e-8))
+
+
+def _bucket_error_table(
+    frame: pd.DataFrame,
+    column: str,
+    *,
+    bucket_prefix: str,
+    buckets: int = 4,
+) -> list[dict[str, Any]]:
+    if column not in frame:
+        return []
+    values = pd.to_numeric(frame[column], errors="coerce").replace([np.inf, -np.inf], np.nan)
+    valid = frame.loc[values.notna()].copy()
+    if valid.empty:
+        return []
+    unique = values.loc[valid.index].nunique(dropna=True)
+    if unique < 2:
+        labels = pd.Series([f"{bucket_prefix}0"] * len(valid), index=valid.index)
+    else:
+        labels = pd.qcut(
+            values.loc[valid.index].rank(method="first"),
+            q=min(buckets, int(unique), len(valid)),
+            labels=False,
+            duplicates="drop",
+        ).map(lambda item: f"{bucket_prefix}{int(item)}")
+    rows = []
+    for label, group in valid.groupby(labels, observed=True):
+        rows.append(
+            {
+                "bucket": str(label),
+                "count": int(len(group)),
+                "mean_value": _json_float(group[column].mean()),
+                "iv_mae": _json_float(group["abs_error"].mean()),
+                "iv_rmse": _json_float(np.sqrt(np.square(group["abs_error"]).mean())),
+                "heteroscedastic_nll": _json_float(group["heteroscedastic_nll"].mean()),
+                "normalized_price_mae": _json_float(group["normalized_price_abs_error"].mean()),
+            }
+        )
+    return rows
 
 
 def _write_run_artifacts(
@@ -1645,6 +2159,15 @@ def _write_run_artifacts(
     price_diagnostics = _price_diagnostics(predictions)
     finish_stage("diagnostics:price", started, "diagnostics_price.json")
 
+    started = start_stage("diagnostics:reliability", f"{len(predictions)} rows")
+    reliability_diagnostics = _reliability_diagnostics(predictions)
+    reliability_metadata = reliability_diagnostics.get("metadata", {})
+    finish_stage(
+        "diagnostics:reliability",
+        started,
+        f"diagnostics_reliability.json rows={reliability_metadata.get('row_count', 0)}",
+    )
+
     no_arb_scope = (
         f"mode={config.no_arb_diagnostics_mode} "
         f"eval_splits={_format_split_scope(config.no_arb_eval_splits)} "
@@ -1667,6 +2190,9 @@ def _write_run_artifacts(
     (output_dir / "diagnostics_price.json").write_text(
         json.dumps(price_diagnostics, indent=2, sort_keys=True) + "\n"
     )
+    (output_dir / "diagnostics_reliability.json").write_text(
+        json.dumps(reliability_diagnostics, indent=2, sort_keys=True) + "\n"
+    )
     (output_dir / "diagnostics_no_arbitrage.json").write_text(
         json.dumps(no_arb_diagnostics, indent=2, sort_keys=True) + "\n"
     )
@@ -1677,6 +2203,7 @@ def _write_run_artifacts(
         "baseline_eval_splits": list(config.baseline_eval_splits),
         "svi_timeout_seconds": config.svi_timeout_seconds,
         "svi_maxiter": config.svi_maxiter,
+        "reliability_diagnostics": reliability_diagnostics.get("metadata", {}),
         "no_arb_diagnostics": no_arb_diagnostics.get("metadata", {}),
         "prediction_rows": int(len(predictions)),
         "prediction_rows_by_split": (
@@ -1743,6 +2270,12 @@ def _write_run_artifacts(
             ),
             "note": "diagnostics_no_arbitrage.json is computed after training on decoded prices",
         },
+        "implementation": {
+            "model_kind": config.model_kind,
+            "anchor_reference": config.anchor_reference,
+            "implementation_status": config.implementation_status,
+            "implementation_notes": config.implementation_notes,
+        },
         "protocol": {
             "task_mode": config.task_mode,
             "target_space": config.target_space,
@@ -1761,6 +2294,7 @@ def _write_run_artifacts(
             "baselines_summary.csv",
             "diagnostic_leakage_prone_baselines.csv",
             "diagnostics_price.json",
+            "diagnostics_reliability.json",
             "diagnostics_no_arbitrage.json",
             "postprocess_summary.json",
             "README.md",
@@ -2016,7 +2550,15 @@ def _baseline_metric_row(
         "fit_success_rate": predicted_rows / eval_rows if eval_rows else np.nan,
         "failure_rate": float(1.0 - predicted_rows / eval_rows) if eval_rows else np.nan,
     }
-    for key in ("ok", "underidentified", "fit_failed", "timeout", "no_visible_context"):
+    for key in (
+        "ok",
+        "underidentified",
+        "fit_failed",
+        "timeout",
+        "constraint_failed",
+        "projected",
+        "no_visible_context",
+    ):
         row[f"{key}_rate"] = float(status_counts.get(key, 0) / eval_rows) if eval_rows else np.nan
     return row
 
@@ -2065,6 +2607,45 @@ def _within_surface_baseline_predictions(
             maxiter=svi_maxiter,
         )
         log(f"within_surface_svi_raw_per_expiry done ({time.monotonic() - started:.1f}s)")
+
+        started = time.monotonic()
+        log("within_surface_svi_constrained_per_expiry start")
+        result["within_surface_svi_constrained_per_expiry"] = _within_surface_svi_raw_baseline(
+            visible,
+            eval_frame,
+            timeout_seconds=svi_timeout_seconds,
+            maxiter=svi_maxiter,
+            constrained=True,
+        )
+        log(f"within_surface_svi_constrained_per_expiry done ({time.monotonic() - started:.1f}s)")
+
+        started = time.monotonic()
+        log("within_surface_svi_calendar_projection start")
+        result["within_surface_svi_calendar_projection"] = _project_calendar_total_variance(
+            result["within_surface_svi_raw_per_expiry"],
+            eval_frame,
+            baseline_name="within_surface_svi_calendar_projection",
+        )
+        log(f"within_surface_svi_calendar_projection done ({time.monotonic() - started:.1f}s)")
+
+        started = time.monotonic()
+        log("within_surface_ssvi_calendar_constrained start")
+        result["within_surface_ssvi_calendar_constrained"] = _within_surface_ssvi_baseline(
+            visible,
+            eval_frame,
+            timeout_seconds=svi_timeout_seconds,
+            maxiter=svi_maxiter,
+        )
+        log(f"within_surface_ssvi_calendar_constrained done ({time.monotonic() - started:.1f}s)")
+
+        started = time.monotonic()
+        log("within_surface_rbf_calendar_projection start")
+        result["within_surface_rbf_calendar_projection"] = _project_calendar_total_variance(
+            result["within_surface_rbf"],
+            eval_frame,
+            baseline_name="within_surface_rbf_calendar_projection",
+        )
+        log(f"within_surface_rbf_calendar_projection done ({time.monotonic() - started:.1f}s)")
     else:
         log("within_surface_svi_raw_per_expiry skipped by baseline_preset=fast")
     return result
@@ -2200,6 +2781,7 @@ def _within_surface_svi_raw_baseline(
     *,
     timeout_seconds: float = 1.0,
     maxiter: int = 200,
+    constrained: bool = False,
 ) -> dict[str, Any]:
     preds = pd.Series(np.nan, index=eval_frame.index, dtype=float)
     status = pd.Series("no_visible_context", index=eval_frame.index, dtype=object)
@@ -2216,7 +2798,9 @@ def _within_surface_svi_raw_baseline(
                 "fit_timeout_rate": 0.0,
                 "fit_underidentified_rate": 0.0,
                 "fit_failed_rate": 0.0,
+                "fit_constraint_failed_rate": 0.0,
                 "fallback_target": "",
+                "constraint_policy": "svi_dense_vertical_butterfly" if constrained else "",
             },
         }
     fit_cache: dict[tuple[Any, ...], dict[str, Any]] = {}
@@ -2232,6 +2816,7 @@ def _within_surface_svi_raw_baseline(
                 visible_groups.get(key, pd.DataFrame()),
                 timeout_seconds=timeout_seconds,
                 maxiter=maxiter,
+                constrained=constrained,
             )
             fit_cache[key] = fit
             fit_counts[str(fit["status"])] = fit_counts.get(str(fit["status"]), 0) + 1
@@ -2256,7 +2841,138 @@ def _within_surface_svi_raw_baseline(
             "fit_timeout_rate": float(fit_counts.get("timeout", 0) / total_fits),
             "fit_underidentified_rate": float(fit_counts.get("underidentified", 0) / total_fits),
             "fit_failed_rate": float(fit_counts.get("fit_failed", 0) / total_fits),
+            "fit_constraint_failed_rate": float(
+                fit_counts.get("constraint_failed", 0) / total_fits
+            ),
             "fallback_target": "",
+            "constraint_policy": "svi_dense_vertical_butterfly" if constrained else "",
+        },
+    }
+
+
+def _project_calendar_total_variance(
+    payload: dict[str, Any],
+    eval_frame: pd.DataFrame,
+    *,
+    baseline_name: str,
+) -> dict[str, Any]:
+    pred = pd.Series(payload["pred"], index=eval_frame.index).astype(float).copy()
+    status = payload.get("status")
+    status = (
+        pd.Series("ok", index=eval_frame.index)
+        if status is None
+        else pd.Series(status, index=eval_frame.index).reindex(eval_frame.index).fillna("ok")
+    )
+    if {"split", "surface_id", "option_type", "strike", "tenor_years"}.issubset(eval_frame.columns):
+        for _, group in eval_frame.groupby(
+            ["split", "surface_id", "option_type", "strike"], dropna=False
+        ):
+            idx = group.index[pred.loc[group.index].notna()]
+            if len(idx) < 2:
+                continue
+            tau = group.loc[idx, "tenor_years"].astype(float).to_numpy()
+            values = pred.loc[idx].astype(float).to_numpy()
+            order = np.argsort(tau)
+            tau_sorted = tau[order]
+            values_sorted = values[order]
+            valid = np.isfinite(tau_sorted) & (tau_sorted > 0) & np.isfinite(values_sorted)
+            if valid.sum() < 2:
+                continue
+            total_variance = np.maximum(values_sorted[valid] ** 2 * tau_sorted[valid], 1e-12)
+            projected = np.maximum.accumulate(total_variance)
+            projected_iv = np.sqrt(projected / np.maximum(tau_sorted[valid], 1e-12))
+            sorted_idx = idx.to_numpy()[order][valid]
+            pred.loc[sorted_idx] = np.clip(projected_iv, 1e-6, 5.0)
+            status.loc[sorted_idx] = np.where(
+                status.loc[sorted_idx] == "ok", "projected", status.loc[sorted_idx]
+            )
+    metadata = dict(payload.get("metadata", {}))
+    metadata.update(
+        {
+            "projection": "calendar_total_variance_cummax",
+            "projection_scope": "split_surface_option_type_strike",
+            "projection_note": (
+                f"{baseline_name} enforces only calendar total-variance monotonicity; "
+                "it is not a full static-arbitrage projection."
+            ),
+        }
+    )
+    return {"pred": pred, "status": status, "metadata": metadata}
+
+
+def _within_surface_ssvi_baseline(
+    visible_frame: pd.DataFrame,
+    eval_frame: pd.DataFrame,
+    *,
+    timeout_seconds: float = 1.0,
+    maxiter: int = 200,
+) -> dict[str, Any]:
+    preds = pd.Series(np.nan, index=eval_frame.index, dtype=float)
+    status = pd.Series("no_visible_context", index=eval_frame.index, dtype=object)
+    required = {"split", "surface_id", "iv_true", "log_moneyness", "tenor_years"}
+    if not required.issubset(visible_frame.columns) or not required.issubset(eval_frame.columns):
+        return {
+            "pred": preds,
+            "status": status,
+            "metadata": {
+                "fit_count": 0,
+                "fit_ok_rate": 0.0,
+                "fit_timeout_rate": 0.0,
+                "fit_underidentified_rate": 0.0,
+                "fit_failed_rate": 0.0,
+                "fit_constraint_failed_rate": 0.0,
+                "fallback_target": "",
+                "constraint_policy": "ssvi_dense_calendar_vertical_butterfly",
+            },
+        }
+    fit_counts: dict[str, int] = {}
+    visible_groups = {
+        key: group for key, group in visible_frame.groupby(["split", "surface_id"], dropna=False)
+    }
+    fit_cache: dict[tuple[Any, ...], dict[str, Any]] = {}
+    for key, target_group in eval_frame.groupby(["split", "surface_id"], dropna=False):
+        fit = fit_cache.get(key)
+        if fit is None:
+            fit = _fit_ssvi_surface(
+                visible_groups.get(key, pd.DataFrame()),
+                timeout_seconds=timeout_seconds,
+                maxiter=maxiter,
+            )
+            fit_cache[key] = fit
+            fit_counts[str(fit["status"])] = fit_counts.get(str(fit["status"]), 0) + 1
+        if fit["status"] != "ok":
+            status.loc[target_group.index] = fit["status"]
+            continue
+        tau = target_group["tenor_years"].astype(float).clip(lower=1e-8).to_numpy()
+        k = target_group["log_moneyness"].fillna(0.0).to_numpy(dtype=float)
+        theta = np.interp(
+            tau,
+            fit["tau_grid"],
+            fit["theta_grid"],
+            left=fit["theta_grid"][0],
+            right=fit["theta_grid"][-1],
+        )
+        total_variance = _ssvi_total_variance(k, theta, fit["params"])
+        valid = np.isfinite(total_variance) & (total_variance > 0) & np.isfinite(tau)
+        values = np.full(len(target_group), np.nan, dtype=float)
+        values[valid] = np.sqrt(np.maximum(total_variance[valid] / tau[valid], 1e-12))
+        preds.loc[target_group.index] = np.clip(values, 1e-6, 5.0)
+        status.loc[target_group.index] = np.where(np.isfinite(values), "ok", "fit_failed")
+    total_fits = max(sum(fit_counts.values()), 1)
+    return {
+        "pred": preds,
+        "status": status,
+        "metadata": {
+            "fit_count": int(sum(fit_counts.values())),
+            "fit_ok_rate": float(fit_counts.get("ok", 0) / total_fits),
+            "fit_timeout_rate": float(fit_counts.get("timeout", 0) / total_fits),
+            "fit_underidentified_rate": float(fit_counts.get("underidentified", 0) / total_fits),
+            "fit_failed_rate": float(fit_counts.get("fit_failed", 0) / total_fits),
+            "fit_constraint_failed_rate": float(
+                fit_counts.get("constraint_failed", 0) / total_fits
+            ),
+            "fallback_target": "",
+            "constraint_policy": "ssvi_dense_calendar_vertical_butterfly",
         },
     }
 
@@ -2266,6 +2982,7 @@ def _fit_svi_slice_raw(
     *,
     timeout_seconds: float = 1.0,
     maxiter: int = 200,
+    constrained: bool = False,
 ) -> dict[str, Any]:
     from scipy.optimize import minimize
 
@@ -2332,6 +3049,8 @@ def _fit_svi_slice_raw(
     fitted = _svi_total_variance(k, best_params)
     if not np.all(np.isfinite(fitted)) or np.any(fitted <= 0):
         return {"status": "fit_failed", "params": None}
+    if constrained and not _svi_dense_shape_pass(best_params, float(tau), k_min, k_max):
+        return {"status": "constraint_failed", "params": None}
     return {"status": "ok", "params": best_params}
 
 
@@ -2340,6 +3059,185 @@ def _svi_total_variance(k: np.ndarray, params: np.ndarray | None) -> np.ndarray:
         return np.full_like(k, np.nan, dtype=float)
     a, b, rho, m, sigma = [float(value) for value in params]
     return a + b * (rho * (k - m) + np.sqrt((k - m) ** 2 + sigma**2))
+
+
+def _fit_ssvi_surface(
+    visible_surface: pd.DataFrame,
+    *,
+    timeout_seconds: float = 1.0,
+    maxiter: int = 200,
+) -> dict[str, Any]:
+    from scipy.optimize import minimize
+
+    if visible_surface.empty:
+        return {"status": "no_visible_context", "params": None}
+    frame = visible_surface[
+        visible_surface["iv_true"].notna()
+        & visible_surface["log_moneyness"].notna()
+        & visible_surface["tenor_years"].notna()
+    ].copy()
+    if (
+        len(frame) < 12
+        or frame["tenor_years"].nunique() < 2
+        or frame["log_moneyness"].nunique() < 5
+    ):
+        return {"status": "underidentified", "params": None}
+    tau = frame["tenor_years"].astype(float).to_numpy()
+    k = frame["log_moneyness"].to_numpy(dtype=float)
+    y = np.clip(frame["iv_true"].to_numpy(dtype=float), 1e-8, None) ** 2 * tau
+    valid = np.isfinite(tau) & (tau > 0) & np.isfinite(k) & np.isfinite(y) & (y > 0)
+    if valid.sum() < 12:
+        return {"status": "underidentified", "params": None}
+    tau = tau[valid]
+    k = k[valid]
+    y = y[valid]
+    tau_grid, inverse = np.unique(tau, return_inverse=True)
+    theta_grid = np.zeros_like(tau_grid, dtype=float)
+    for idx in range(len(tau_grid)):
+        theta_grid[idx] = float(np.nanmedian(y[inverse == idx]))
+    order = np.argsort(tau_grid)
+    tau_grid = tau_grid[order]
+    theta_grid = np.maximum.accumulate(np.maximum(theta_grid[order], 1e-8))
+    theta = np.interp(tau, tau_grid, theta_grid)
+
+    def objective(params: np.ndarray) -> float:
+        w = _ssvi_total_variance(k, theta, params)
+        if not np.all(np.isfinite(w)):
+            return 1e12
+        penalty = float(np.square(np.minimum(w, 0.0)).sum()) * 1e6
+        return float(np.mean((w - y) ** 2) + penalty)
+
+    bounds = [(-0.95, 0.95), (1e-4, 5.0), (0.01, 0.75)]
+    starts = [
+        np.array([-0.3, 0.5, 0.5]),
+        np.array([0.0, 0.3, 0.3]),
+        np.array([0.3, 0.8, 0.2]),
+    ]
+    best_params: np.ndarray | None = None
+    best_fun = float("inf")
+    try:
+        with _wall_time_limit(timeout_seconds):
+            for start in starts:
+                result = minimize(
+                    objective,
+                    start,
+                    method="L-BFGS-B",
+                    bounds=bounds,
+                    options={"maxiter": maxiter, "ftol": 1e-12},
+                )
+                if result.success and float(result.fun) < best_fun:
+                    best_fun = float(result.fun)
+                    best_params = np.asarray(result.x, dtype=float)
+    except TimeoutError:
+        return {"status": "timeout", "params": None}
+    if best_params is None or not np.all(np.isfinite(best_params)):
+        return {"status": "fit_failed", "params": None}
+    fitted = _ssvi_total_variance(k, theta, best_params)
+    if not np.all(np.isfinite(fitted)) or np.any(fitted <= 0):
+        return {"status": "fit_failed", "params": None}
+    if not _ssvi_dense_shape_pass(
+        best_params, tau_grid, theta_grid, float(k.min()), float(k.max())
+    ):
+        return {"status": "constraint_failed", "params": None}
+    return {
+        "status": "ok",
+        "params": best_params,
+        "tau_grid": tau_grid,
+        "theta_grid": theta_grid,
+    }
+
+
+def _ssvi_total_variance(k: np.ndarray, theta: np.ndarray, params: np.ndarray | None) -> np.ndarray:
+    if params is None:
+        return np.full_like(k, np.nan, dtype=float)
+    rho, eta, gamma = [float(value) for value in params]
+    theta = np.maximum(np.asarray(theta, dtype=float), 1e-8)
+    phi = eta * np.power(theta, -gamma)
+    term = phi * k + rho
+    return (
+        0.5
+        * theta
+        * (1.0 + rho * phi * k + np.sqrt(np.maximum(term * term + 1.0 - rho * rho, 1e-12)))
+    )
+
+
+def _svi_dense_shape_pass(
+    params: np.ndarray,
+    tau: float,
+    k_min: float,
+    k_max: float,
+    *,
+    tolerance: float = 1e-5,
+) -> bool:
+    low = min(k_min, -0.6)
+    high = max(k_max, 0.6)
+    k_grid = np.linspace(low, high, 41)
+    total_variance = _svi_total_variance(k_grid, params)
+    if not np.all(np.isfinite(total_variance)) or np.any(total_variance <= 0):
+        return False
+    iv = np.sqrt(total_variance / max(tau, 1e-8))
+    return _call_slice_shape_pass(k_grid, iv, np.full_like(k_grid, max(tau, 1e-8)), tolerance)
+
+
+def _ssvi_dense_shape_pass(
+    params: np.ndarray,
+    tau_grid: np.ndarray,
+    theta_grid: np.ndarray,
+    k_min: float,
+    k_max: float,
+    *,
+    tolerance: float = 1e-5,
+) -> bool:
+    low = min(k_min, -0.6)
+    high = max(k_max, 0.6)
+    k_grid = np.linspace(low, high, 41)
+    previous_w: np.ndarray | None = None
+    for tau, theta in zip(tau_grid, theta_grid, strict=False):
+        theta_vec = np.full_like(k_grid, float(theta))
+        total_variance = _ssvi_total_variance(k_grid, theta_vec, params)
+        if not np.all(np.isfinite(total_variance)) or np.any(total_variance <= 0):
+            return False
+        if previous_w is not None and np.any(total_variance + tolerance < previous_w):
+            return False
+        previous_w = total_variance
+        iv = np.sqrt(total_variance / max(float(tau), 1e-8))
+        if not _call_slice_shape_pass(
+            k_grid,
+            iv,
+            np.full_like(k_grid, max(float(tau), 1e-8)),
+            tolerance,
+        ):
+            return False
+    return True
+
+
+def _call_slice_shape_pass(
+    k_grid: np.ndarray,
+    iv: np.ndarray,
+    tau: np.ndarray,
+    tolerance: float,
+) -> bool:
+    strikes = np.exp(k_grid)
+    prices = np.array(
+        [
+            _black_forward_price(
+                option_type="C",
+                forward=1.0,
+                strike=float(strike),
+                tenor_years=float(tenor),
+                sigma=float(sigma),
+            )
+            for strike, tenor, sigma in zip(strikes, tau, iv, strict=False)
+        ],
+        dtype=float,
+    )
+    if not np.all(np.isfinite(prices)):
+        return False
+    slopes = np.diff(prices) / np.diff(strikes)
+    if np.any(slopes > tolerance) or np.any(slopes < -1.0 - tolerance):
+        return False
+    second = np.diff(slopes)
+    return not np.any(second < -tolerance)
 
 
 @contextmanager

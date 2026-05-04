@@ -94,6 +94,8 @@ def test_benchmark_protocol_exposes_postprocess_controls() -> None:
             "0.7",
             "--reliability-gate-weight",
             "0.5",
+            "--cross-view-alignment-weight",
+            "0.1",
             "--quiet-postprocess",
         ]
     )
@@ -108,7 +110,53 @@ def test_benchmark_protocol_exposes_postprocess_controls() -> None:
     assert args.variant_suite == "lagos_v2"
     assert args.heteroscedastic_weight == pytest.approx(0.7)
     assert args.reliability_gate_weight == pytest.approx(0.5)
+    assert args.cross_view_alignment_weight == pytest.approx(0.1)
     assert args.quiet_postprocess
+
+
+def test_benchmark_protocol_exposes_anchor_proxy_suite() -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "benchmark-protocol",
+            "--us-data",
+            "us.parquet",
+            "--variant-suite",
+            "anchor_proxy",
+            "--variants",
+            "anchor_volnp_proxy,anchor_operator_deep_smoothing_proxy",
+        ]
+    )
+
+    assert args.variant_suite == "anchor_proxy"
+    assert args.variants == "anchor_volnp_proxy,anchor_operator_deep_smoothing_proxy"
+
+
+def test_common_args_expose_anchor_backbone_controls() -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "train",
+            "--model-kind",
+            "hexagon_attention",
+            "--graph-style",
+            "shuffled_edges",
+        ]
+    )
+
+    assert args.model_kind == "hexagon_attention"
+    assert args.graph_style == "shuffled_edges"
+
+
+def test_hyperiv_compare_command_writes_manifest(tmp_path: Path) -> None:
+    output_dir = tmp_path / "hyperiv"
+
+    main(["hyperiv-compare", "--output-dir", str(output_dir)])
+
+    manifest = json.loads((output_dir / "hyperiv_external_manifest.json").read_text())
+    assert manifest["implementation_status"] == "external_scaffold"
+    assert manifest["repo_status"] == "not_configured"
+    assert manifest["adapter_status"] == "not_configured"
 
 
 def test_read_baseline_rows_skips_scope_labels(tmp_path: Path) -> None:

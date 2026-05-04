@@ -77,6 +77,12 @@ class EdgeKind(StrEnum):
     STRIKE_NEIGHBOR = "strike_neighbor"
     MATURITY_NEIGHBOR = "maturity_neighbor"
     LIQUIDITY_SIMILARITY = "liquidity_similarity"
+    SAME_EXPIRY = "same_expiry"
+    SAME_STRIKE = "same_strike"
+    NEAR_MONEYNESS = "near_moneyness"
+    NEAR_TENOR = "near_tenor"
+    PUT_CALL_PAIR = "put_call_pair"
+    SAME_LIQUIDITY_BUCKET = "same_liquidity_bucket"
 
 
 class OptionNode(BaseModel):

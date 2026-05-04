@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 import pickle
+import subprocess
 import sys
 from dataclasses import replace
 from datetime import date, datetime
@@ -231,6 +232,10 @@ def _training_config_from_args(
     *,
     experiment_name: str | None = None,
     model_kind: str | None = None,
+    graph_style: str | None = None,
+    anchor_reference: str | None = None,
+    implementation_status: str | None = None,
+    implementation_notes: str | None = None,
     similarity_edges_per_node: int | None = None,
     no_arb_weight: float | None = None,
     calendar_weight: float | None = None,
@@ -241,6 +246,7 @@ def _training_config_from_args(
     contrastive_weight: float | None = None,
     heteroscedastic_weight: float | None = None,
     reliability_gate_weight: float | None = None,
+    cross_view_alignment_weight: float | None = None,
     use_liquidity_features: bool | None = None,
     use_liquidity_gate: bool | None = None,
 ) -> Any:
@@ -254,6 +260,10 @@ def _training_config_from_args(
         n_encoder_layers=args.encoder_layers,
         n_gnn_layers=args.gnn_layers,
         model_kind=model_kind or args.model_kind,
+        graph_style=graph_style or args.graph_style,
+        anchor_reference=anchor_reference or "",
+        implementation_status=implementation_status or "native",
+        implementation_notes=implementation_notes or "",
         task_mode=args.task,
         split_mode=args.split_mode,
         heldout_tickers=tuple(
@@ -287,6 +297,9 @@ def _training_config_from_args(
         reliability_gate_weight=args.reliability_gate_weight
         if reliability_gate_weight is None
         else reliability_gate_weight,
+        cross_view_alignment_weight=args.cross_view_alignment_weight
+        if cross_view_alignment_weight is None
+        else cross_view_alignment_weight,
         use_liquidity_features=args.use_liquidity_features
         if use_liquidity_features is None
         else use_liquidity_features,
@@ -812,7 +825,7 @@ def _cmd_benchmark_protocol(args: argparse.Namespace) -> None:
             "use_liquidity_gate": True,
         },
     ]
-    if args.variant_suite == "lagos_v2":
+    if args.variant_suite in {"lagos_v2", "anchor_proxy"}:
         variants = [
             *variants,
             {
@@ -829,6 +842,22 @@ def _cmd_benchmark_protocol(args: argparse.Namespace) -> None:
                 "heteroscedastic_weight": 0.0,
                 "reliability_gate_weight": 0.0,
                 "use_liquidity_features": False,
+                "use_liquidity_gate": False,
+            },
+            {
+                "name": "set_context_mlp",
+                "model_kind": "set_context_mlp",
+                "similarity_edges_per_node": 0,
+                "no_arb_weight": 0.0,
+                "calendar_weight": 0.0,
+                "butterfly_weight": 0.0,
+                "put_call_weight": 0.0,
+                "convexity_weight": 0.0,
+                "smoothness_weight": 0.0,
+                "contrastive_weight": 0.0,
+                "heteroscedastic_weight": 0.0,
+                "reliability_gate_weight": 0.0,
+                "use_liquidity_features": True,
                 "use_liquidity_gate": False,
             },
             {
@@ -911,6 +940,186 @@ def _cmd_benchmark_protocol(args: argparse.Namespace) -> None:
                 "use_liquidity_features": True,
                 "use_liquidity_gate": True,
             },
+            {
+                "name": "lagos_random_edges",
+                "model_kind": "gnn",
+                "graph_style": "random_edges",
+                "similarity_edges_per_node": args.similarity_edges_per_node,
+                "no_arb_weight": 0.0,
+                "calendar_weight": 0.0,
+                "butterfly_weight": 0.0,
+                "put_call_weight": 0.0,
+                "convexity_weight": 0.0,
+                "smoothness_weight": args.smoothness_weight,
+                "contrastive_weight": args.contrastive_weight,
+                "heteroscedastic_weight": 0.0,
+                "reliability_gate_weight": 0.0,
+                "use_liquidity_features": True,
+                "use_liquidity_gate": True,
+            },
+            {
+                "name": "lagos_shuffled_edges",
+                "model_kind": "gnn",
+                "graph_style": "shuffled_edges",
+                "similarity_edges_per_node": args.similarity_edges_per_node,
+                "no_arb_weight": 0.0,
+                "calendar_weight": 0.0,
+                "butterfly_weight": 0.0,
+                "put_call_weight": 0.0,
+                "convexity_weight": 0.0,
+                "smoothness_weight": args.smoothness_weight,
+                "contrastive_weight": args.contrastive_weight,
+                "heteroscedastic_weight": 0.0,
+                "reliability_gate_weight": 0.0,
+                "use_liquidity_features": True,
+                "use_liquidity_gate": True,
+            },
+        ]
+    if args.variant_suite == "anchor_proxy":
+        variants = [
+            *variants,
+            {
+                "name": "anchor_deep_smoothing_proxy",
+                "model_kind": "grid_cnn",
+                "graph_style": "default",
+                "similarity_edges_per_node": 0,
+                "no_arb_weight": args.no_arb_weight,
+                "calendar_weight": args.calendar_weight,
+                "butterfly_weight": args.butterfly_weight,
+                "put_call_weight": args.put_call_weight,
+                "convexity_weight": args.convexity_weight,
+                "smoothness_weight": 0.0,
+                "contrastive_weight": 0.0,
+                "heteroscedastic_weight": 0.0,
+                "reliability_gate_weight": 0.0,
+                "use_liquidity_features": True,
+                "use_liquidity_gate": False,
+                "anchor_reference": "Deep Smoothing of the Implied Volatility Surface",
+                "implementation_status": "faithful_spirit",
+                "implementation_notes": (
+                    "Fixed-grid CNN smoother with decoded calendar/convexity regularization. "
+                    "It captures the grid-neural-smoothing family but is not a reproduction "
+                    "of the NeurIPS 2020 implementation."
+                ),
+            },
+            {
+                "name": "anchor_operator_deep_smoothing_proxy",
+                "model_kind": "ods_operator",
+                "graph_style": "default",
+                "similarity_edges_per_node": args.similarity_edges_per_node,
+                "no_arb_weight": args.no_arb_weight,
+                "calendar_weight": args.calendar_weight,
+                "butterfly_weight": args.butterfly_weight,
+                "put_call_weight": args.put_call_weight,
+                "convexity_weight": args.convexity_weight,
+                "smoothness_weight": args.smoothness_weight,
+                "contrastive_weight": args.contrastive_weight,
+                "heteroscedastic_weight": 0.0,
+                "reliability_gate_weight": 0.0,
+                "use_liquidity_features": False,
+                "use_liquidity_gate": False,
+                "anchor_reference": "Operator Deep Smoothing for Implied Volatility",
+                "implementation_status": "faithful_spirit",
+                "implementation_notes": (
+                    "Continuous-coordinate kernel operator over visible option tokens, "
+                    "without liquidity reliability modeling. Not a reproduction of the "
+                    "ICLR 2025 implementation."
+                ),
+            },
+            {
+                "name": "anchor_hexagon_proxy",
+                "model_kind": "hexagon_attention",
+                "graph_style": "hexagon",
+                "similarity_edges_per_node": args.similarity_edges_per_node,
+                "no_arb_weight": 0.0,
+                "calendar_weight": 0.0,
+                "butterfly_weight": 0.0,
+                "put_call_weight": 0.0,
+                "convexity_weight": 0.0,
+                "smoothness_weight": args.smoothness_weight,
+                "contrastive_weight": args.contrastive_weight,
+                "heteroscedastic_weight": 0.0,
+                "reliability_gate_weight": 0.0,
+                "cross_view_alignment_weight": 0.1,
+                "use_liquidity_features": True,
+                "use_liquidity_gate": True,
+                "anchor_reference": "Hexagon-Net",
+                "implementation_status": "faithful_spirit",
+                "implementation_notes": (
+                    "Heterogeneous edge-family attention with same-expiry, same-strike, "
+                    "near-moneyness, near-tenor, put-call, and liquidity-bucket relations. "
+                    "It includes a lightweight cross-view alignment loss but does not "
+                    "reproduce the full Hexagon-Net objective."
+                ),
+            },
+            {
+                "name": "anchor_hyperiv_proxy",
+                "model_kind": "grid_cnn",
+                "graph_style": "default",
+                "similarity_edges_per_node": 0,
+                "no_arb_weight": args.no_arb_weight,
+                "calendar_weight": args.calendar_weight,
+                "butterfly_weight": args.butterfly_weight,
+                "put_call_weight": args.put_call_weight,
+                "convexity_weight": args.convexity_weight,
+                "smoothness_weight": 0.0,
+                "contrastive_weight": 0.0,
+                "heteroscedastic_weight": 0.0,
+                "reliability_gate_weight": 0.0,
+                "use_liquidity_features": True,
+                "use_liquidity_gate": False,
+                "anchor_reference": "HyperIV",
+                "implementation_status": "proxy",
+                "implementation_notes": (
+                    "Fixed-grid neural smoother with decoded no-arbitrage regularization. "
+                    "It is not a hypernetwork and does not provide hard no-arbitrage guarantees."
+                ),
+            },
+            {
+                "name": "anchor_volnp_proxy",
+                "model_kind": "anp",
+                "graph_style": "default",
+                "similarity_edges_per_node": 0,
+                "no_arb_weight": 0.0,
+                "calendar_weight": 0.0,
+                "butterfly_weight": 0.0,
+                "put_call_weight": 0.0,
+                "convexity_weight": 0.0,
+                "smoothness_weight": 0.0,
+                "contrastive_weight": 0.0,
+                "heteroscedastic_weight": 0.0,
+                "reliability_gate_weight": 0.0,
+                "use_liquidity_features": True,
+                "use_liquidity_gate": False,
+                "anchor_reference": "Volatility Neural Process / sparse-quote completion",
+                "implementation_status": "faithful_spirit",
+                "implementation_notes": (
+                    "Attentive neural-process-style context-query baseline for sparse-quote "
+                    "completion. It does not include SABR-prior pretraining."
+                ),
+            },
+            {
+                "name": "cnp_baseline",
+                "model_kind": "cnp",
+                "graph_style": "default",
+                "similarity_edges_per_node": 0,
+                "no_arb_weight": 0.0,
+                "calendar_weight": 0.0,
+                "butterfly_weight": 0.0,
+                "put_call_weight": 0.0,
+                "convexity_weight": 0.0,
+                "smoothness_weight": 0.0,
+                "contrastive_weight": 0.0,
+                "heteroscedastic_weight": 0.0,
+                "reliability_gate_weight": 0.0,
+                "use_liquidity_features": True,
+                "use_liquidity_gate": False,
+                "anchor_reference": "Conditional Neural Process",
+                "implementation_status": "native_baseline",
+                "implementation_notes": (
+                    "Permutation-invariant CNP baseline using visible option tokens as context."
+                ),
+            },
         ]
     if args.variants:
         selected = {item.strip() for item in args.variants.split(",") if item.strip()}
@@ -934,6 +1143,10 @@ def _cmd_benchmark_protocol(args: argparse.Namespace) -> None:
                 args,
                 experiment_name=experiment_name,
                 model_kind=str(variant["model_kind"]),
+                graph_style=str(variant.get("graph_style", args.graph_style)),
+                anchor_reference=str(variant.get("anchor_reference", "")),
+                implementation_status=str(variant.get("implementation_status", "native")),
+                implementation_notes=str(variant.get("implementation_notes", "")),
                 similarity_edges_per_node=int(variant["similarity_edges_per_node"]),
                 no_arb_weight=float(variant["no_arb_weight"]),
                 calendar_weight=float(variant["calendar_weight"]),
@@ -944,6 +1157,9 @@ def _cmd_benchmark_protocol(args: argparse.Namespace) -> None:
                 contrastive_weight=float(variant["contrastive_weight"]),
                 heteroscedastic_weight=float(variant["heteroscedastic_weight"]),
                 reliability_gate_weight=float(variant["reliability_gate_weight"]),
+                cross_view_alignment_weight=float(
+                    variant.get("cross_view_alignment_weight", args.cross_view_alignment_weight)
+                ),
                 use_liquidity_features=bool(variant["use_liquidity_features"]),
                 use_liquidity_gate=bool(variant["use_liquidity_gate"]),
             )
@@ -1093,6 +1309,8 @@ def _matrix_row(run_dir: Path, *, market: str, variant: str, claim_label: str) -
             "underidentified_rate",
             "fit_failed_rate",
             "timeout_rate",
+            "constraint_failed_rate",
+            "projected_rate",
             "no_visible_context_rate",
         ):
             row[f"baseline_{baseline}_{metric_name}"] = values.get(metric_name)
@@ -1193,6 +1411,85 @@ def _cmd_data_expansion(args: argparse.Namespace) -> None:
     print(f"Wrote {path}")
 
 
+def _cmd_hyperiv_compare(args: argparse.Namespace) -> None:
+    """Write a manifest for an explicit HyperIV external-code comparison."""
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    repo_path = Path(args.hyperiv_repo).expanduser() if args.hyperiv_repo else None
+    repo_status = "not_configured"
+    repo_commit = ""
+    if repo_path is not None:
+        if repo_path.exists():
+            repo_status = "repo_found"
+            try:
+                repo_commit = subprocess.check_output(
+                    ["git", "-C", str(repo_path), "rev-parse", "HEAD"],
+                    text=True,
+                    stderr=subprocess.DEVNULL,
+                ).strip()
+            except (OSError, subprocess.CalledProcessError):
+                repo_status = "repo_found_not_git"
+        else:
+            repo_status = "repo_missing"
+
+    adapter_status = "not_configured"
+    adapter_returncode: int | None = None
+    adapter_stdout_path = ""
+    adapter_stderr_path = ""
+    if args.adapter_command:
+        adapter_status = "configured_not_run"
+        if args.run_adapter:
+            stdout_path = output_dir / "hyperiv_adapter_stdout.txt"
+            stderr_path = output_dir / "hyperiv_adapter_stderr.txt"
+            env = os.environ.copy()
+            env.update(
+                {
+                    "LOG_IV_US_DATA": str(args.us_data or ""),
+                    "LOG_IV_OUTPUT_DIR": str(output_dir),
+                    "HYPERIV_REPO": str(repo_path or ""),
+                }
+            )
+            with stdout_path.open("w") as stdout, stderr_path.open("w") as stderr:
+                completed = subprocess.run(
+                    args.adapter_command,
+                    shell=True,
+                    check=False,
+                    cwd=str(repo_path) if repo_path and repo_path.exists() else None,
+                    env=env,
+                    stdout=stdout,
+                    stderr=stderr,
+                    text=True,
+                )
+            adapter_returncode = int(completed.returncode)
+            adapter_stdout_path = str(stdout_path)
+            adapter_stderr_path = str(stderr_path)
+            adapter_status = "run_ok" if completed.returncode == 0 else "run_failed"
+
+    manifest = {
+        "comparison": "HyperIV external-code comparison",
+        "implementation_status": "external_scaffold",
+        "clone_url": args.clone_url,
+        "expected_commit": args.expected_commit,
+        "repo_path": str(repo_path or ""),
+        "repo_status": repo_status,
+        "repo_commit": repo_commit,
+        "us_data": str(args.us_data or ""),
+        "adapter_command": args.adapter_command,
+        "adapter_status": adapter_status,
+        "adapter_returncode": adapter_returncode,
+        "adapter_stdout_path": adapter_stdout_path,
+        "adapter_stderr_path": adapter_stderr_path,
+        "notes": (
+            "This command records and optionally runs an external HyperIV adapter. "
+            "It is not a native HyperIV reimplementation and does not claim hard "
+            "no-arbitrage unless the configured external adapter provides it."
+        ),
+    }
+    path = output_dir / "hyperiv_external_manifest.json"
+    path.write_text(json.dumps(manifest, indent=2, sort_keys=True))
+    print(f"Wrote {path}")
+
+
 def _add_common_args(parser: argparse.ArgumentParser) -> None:
     """Add common arguments shared by multiple subcommands."""
     parser.add_argument("--epochs", type=int, default=200)
@@ -1201,7 +1498,25 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--d-model", type=int, default=128)
     parser.add_argument("--encoder-layers", type=int, default=3)
     parser.add_argument("--gnn-layers", type=int, default=3)
-    parser.add_argument("--model-kind", choices=["encoder_mlp", "gnn"], default="gnn")
+    parser.add_argument(
+        "--model-kind",
+        choices=[
+            "encoder_mlp",
+            "gnn",
+            "set_context_mlp",
+            "ods_operator",
+            "hexagon_attention",
+            "cnp",
+            "anp",
+            "grid_cnn",
+        ],
+        default="gnn",
+    )
+    parser.add_argument(
+        "--graph-style",
+        choices=["default", "hexagon", "random_edges", "shuffled_edges"],
+        default="default",
+    )
     parser.add_argument(
         "--task",
         choices=["observed_reconstruction", "masked_reconstruction"],
@@ -1229,6 +1544,7 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--contrastive-weight", type=float, default=0.2)
     parser.add_argument("--heteroscedastic-weight", type=float, default=0.0)
     parser.add_argument("--reliability-gate-weight", type=float, default=0.0)
+    parser.add_argument("--cross-view-alignment-weight", type=float, default=0.0)
     parser.add_argument(
         "--use-liquidity-features", action=argparse.BooleanOptionalAction, default=True
     )
@@ -1382,12 +1698,13 @@ def build_parser() -> argparse.ArgumentParser:
             "Comma-separated subset of the active variant suite. Core variants: "
             "encoder_mlp,gnn_no_liq,gnn_liq,gnn_decoded_calendar_convexity. "
             "lagos_v2 additionally exposes lagos_no_liquidity,lagos_liq_feature_only,"
-            "lagos_scalar_gate,lagos_loss_only,lagos_attn_only,lagos_hetero_full."
+            "lagos_scalar_gate,lagos_loss_only,lagos_attn_only,lagos_hetero_full. "
+            "anchor_proxy additionally exposes paper-anchor proxy variants."
         ),
     )
     p_benchmark.add_argument(
         "--variant-suite",
-        choices=["core", "lagos_v2"],
+        choices=["core", "lagos_v2", "anchor_proxy"],
         default="core",
         help="Variant registry to use. core keeps the local A1 matrix compact.",
     )
@@ -1458,6 +1775,40 @@ def build_parser() -> argparse.ArgumentParser:
     p_expansion.add_argument("--refresh-failed", action="store_true")
     p_expansion.add_argument("--refresh-all", action="store_true")
     p_expansion.set_defaults(func=_cmd_data_expansion)
+
+    # hyperiv-compare
+    p_hyperiv = sub.add_parser(
+        "hyperiv-compare",
+        help="Record or run an external HyperIV comparison adapter",
+    )
+    p_hyperiv.add_argument("--hyperiv-repo", type=str, default="")
+    p_hyperiv.add_argument("--us-data", type=str, default="")
+    p_hyperiv.add_argument(
+        "--output-dir",
+        type=str,
+        default="reports/runs/hyperiv_external",
+    )
+    p_hyperiv.add_argument(
+        "--clone-url",
+        type=str,
+        default="https://github.com/qmfin/hyperiv.git",
+    )
+    p_hyperiv.add_argument(
+        "--expected-commit",
+        type=str,
+        default="bce87cb589c96b37c503c69e55fce58e03eb2a1d",
+    )
+    p_hyperiv.add_argument(
+        "--adapter-command",
+        type=str,
+        default="",
+        help=(
+            "Optional shell command that adapts the external HyperIV repo to LoG-IV data. "
+            "The command receives LOG_IV_US_DATA, LOG_IV_OUTPUT_DIR, and HYPERIV_REPO."
+        ),
+    )
+    p_hyperiv.add_argument("--run-adapter", action="store_true")
+    p_hyperiv.set_defaults(func=_cmd_hyperiv_compare)
 
     return parser
 

@@ -19,6 +19,7 @@ from log_iv.train import (
     _metrics_summary,
     _no_arbitrage_diagnostics,
     _price_diagnostics,
+    _reliability_diagnostics,
     _train_only_baseline_summary,
     _write_run_artifacts,
     compute_losses,
@@ -66,6 +67,7 @@ class DummyModel(torch.nn.Module):
     def __init__(self) -> None:
         super().__init__()
         self.weight = torch.nn.Parameter(torch.tensor([1.0]))
+        self.config = TrainingConfig(n_epochs=1, experiment_name="dummy")
 
     def encode_graph(
         self, surface: list[OptionQuote], device: torch.device
@@ -81,6 +83,7 @@ class DummyModel(torch.nn.Module):
             "iv_pred": iv + 0.01,
             "target_price": iv,
             "target_mask": torch.tensor(mask, dtype=torch.bool, device=device),
+            "log_precision": torch.zeros_like(iv),
         }
 
 
@@ -114,7 +117,11 @@ def test_write_run_artifacts_exports_all_val_and_test_predictions(tmp_path: Path
     assert splits["val_rows"] == 12
     assert splits["test_rows"] == 3
     assert (output_dir / "diagnostics_price.json").is_file()
+    assert (output_dir / "diagnostics_reliability.json").is_file()
     assert (output_dir / "diagnostics_no_arbitrage.json").is_file()
+    reliability = json.loads((output_dir / "diagnostics_reliability.json").read_text())
+    assert reliability["metadata"]["row_count"] == 15
+    assert "predicted_reliability_buckets" in reliability
 
 
 def test_baseline_summary_contains_first_matrix_baselines() -> None:
@@ -451,6 +458,83 @@ def test_heteroscedastic_loss_is_finite_on_masked_nodes() -> None:
     assert torch.isfinite(losses["total"])
 
 
+def test_set_context_mlp_uses_visible_context_without_gnn() -> None:
+    model = OptionTokenGNN(
+        TrainingConfig(
+            model_kind="set_context_mlp",
+            d_model=16,
+            n_encoder_layers=1,
+            n_gnn_layers=0,
+            task_mode="masked_reconstruction",
+            no_arb_weight=0.0,
+        )
+    )
+    surface = _surface(1)
+    masked = surface[0].model_copy(update={"implied_vol": None, "bid": None, "ask": None})
+    from log_iv.train import SurfaceData
+
+    output = model.encode_graph(
+        SurfaceData(
+            surface_id="unit",
+            target_quotes=surface,
+            input_quotes=[masked, *surface[1:]],
+            target_mask=(True, False, False),
+        ),
+        torch.device("cpu"),
+    )
+
+    assert output["iv_pred"].shape == (3, 1)
+    assert output["layer_outputs"] == []
+    assert torch.isfinite(output["surface_embedding"]).all()
+
+
+@pytest.mark.parametrize(
+    ("model_kind", "graph_style"),
+    [
+        ("ods_operator", "default"),
+        ("hexagon_attention", "hexagon"),
+        ("cnp", "default"),
+        ("anp", "default"),
+        ("grid_cnn", "default"),
+    ],
+)
+def test_anchor_baseline_model_kinds_encode_masked_surface(
+    model_kind: str,
+    graph_style: str,
+) -> None:
+    from log_iv.train import SurfaceData
+
+    model = OptionTokenGNN(
+        TrainingConfig(
+            model_kind=model_kind,
+            graph_style=graph_style,
+            d_model=16,
+            n_encoder_layers=1,
+            n_gnn_layers=1,
+            task_mode="masked_reconstruction",
+            no_arb_weight=0.0,
+            dropout=0.0,
+        )
+    )
+    surface = _surface(2)
+    masked = surface[0].model_copy(update={"implied_vol": None, "bid": None, "ask": None})
+
+    output = model.encode_graph(
+        SurfaceData(
+            surface_id="unit",
+            target_quotes=surface,
+            input_quotes=[masked, *surface[1:]],
+            target_mask=(True, False, False),
+        ),
+        torch.device("cpu"),
+    )
+
+    assert output["iv_pred"].shape == (3, 1)
+    assert torch.isfinite(output["surface_embedding"]).all()
+    assert len(output["layer_outputs"]) == 1
+    assert torch.isfinite(output["cross_view_alignment_loss"])
+
+
 def test_zero_target_greeks_loss_is_disabled_by_default() -> None:
     model = OptionTokenGNN(
         TrainingConfig(d_model=16, n_encoder_layers=1, n_gnn_layers=0, no_arb_weight=0.0)
@@ -504,6 +588,41 @@ def test_diagnostics_detect_price_and_no_arb_violations() -> None:
     assert no_arb["pred_iv"]["butterfly_convexity"]["violations"] >= 1
     assert no_arb["pred_iv"]["vertical_spread"]["pairs"] >= 1
     assert no_arb["pred_iv"]["put_call_parity"]["pairs"] >= 1
+
+
+def test_reliability_diagnostics_rank_errors_and_bucket_nll() -> None:
+    predictions = pd.DataFrame(
+        {
+            "split": ["test"] * 4,
+            "surface_id": ["s"] * 4,
+            "underlying": ["SPY"] * 4,
+            "expiry": ["2026-02-20"] * 4,
+            "strike": [95.0, 100.0, 105.0, 110.0],
+            "option_type": ["C"] * 4,
+            "iv_true": [0.20, 0.20, 0.20, 0.20],
+            "iv_pred": [0.21, 0.23, 0.28, 0.35],
+            "precision_pred": [20.0, 10.0, 2.0, 0.5],
+            "log_precision_pred": [3.0, 2.0, 0.0, -1.0],
+            "iv_pred_lower_90": [0.10, 0.10, 0.10, 0.10],
+            "iv_pred_upper_90": [0.30, 0.30, 0.30, 0.19],
+            "spread": [0.01, 0.02, 0.10, 0.20],
+            "volume": [1000, 500, 50, 5],
+            "open_interest": [2000, 1000, 100, 10],
+            "forward": [100.0] * 4,
+            "underlying_price": [100.0] * 4,
+            "tenor_years": [30 / 365.25] * 4,
+            "is_masked_target": [True] * 4,
+        }
+    )
+
+    diagnostics = _reliability_diagnostics(predictions)
+
+    assert diagnostics["metadata"]["eval_scope"] == "masked_nodes"
+    assert diagnostics["rank_metrics"]["precision_abs_error_spearman"] < 0
+    assert diagnostics["rank_metrics"]["reliability_error_rank_score"] > 0
+    assert diagnostics["predicted_reliability_buckets"]
+    assert diagnostics["liquidity_buckets"]["spread"]
+    assert diagnostics["interval_90"]["coverage"] == pytest.approx(0.75)
 
 
 def test_no_arb_diagnostics_sample_complete_surfaces() -> None:
