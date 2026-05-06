@@ -3,7 +3,7 @@ name = "log-iv"
 version = "0.1.0"
 description = "Exploration scaffold for liquidity-aware graph learning on irregular option surfaces."
 readme = "README.md"
-requires-python = ">=3.11,<3.13"
+requires-python = ">=3.11,<3.14"
 dependencies = [
     "httpx>=0.28.0",
     "numpy>=2.1.0",
