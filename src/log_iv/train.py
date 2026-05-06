@@ -71,6 +71,8 @@ class TrainingConfig:
     weight_decay: float = 1e-5
     dropout: float = 0.1
     torch_num_threads: int | None = None
+    early_stopping_patience: int = 0
+    early_stopping_min_delta: float = 0.0
 
     # Loss weights
     iv_recon_weight: float = 1.0
@@ -1466,6 +1468,8 @@ def train(
 
     metrics_history: list[TrainingMetrics] = []
     best_val_loss = float("inf")
+    epochs_without_improvement = 0
+    best_state_dict: dict[str, torch.Tensor] | None = None
 
     print(f"Training on {device}, {len(train_quotes)} train / {len(val_quotes)} val graphs")
 
@@ -1500,8 +1504,12 @@ def train(
             )
 
         # Save best model
-        if val_loss < best_val_loss:
+        if val_loss < best_val_loss - max(float(cfg.early_stopping_min_delta), 0.0):
             best_val_loss = val_loss
+            epochs_without_improvement = 0
+            best_state_dict = {
+                key: value.detach().cpu().clone() for key, value in model.state_dict().items()
+            }
             torch.save(
                 {
                     "epoch": epoch,
@@ -1512,6 +1520,8 @@ def train(
                 },
                 output_dir / "best_model.pt",
             )
+        else:
+            epochs_without_improvement += 1
 
         # Periodic checkpoint
         if epoch % cfg.save_every == 0:
@@ -1525,6 +1535,20 @@ def train(
                 },
                 output_dir / f"checkpoint_epoch_{epoch}.pt",
             )
+
+        if cfg.early_stopping_patience > 0 and (
+            epochs_without_improvement >= cfg.early_stopping_patience
+        ):
+            print(
+                "Early stopping: "
+                f"no validation improvement for {epochs_without_improvement} epochs "
+                f"(patience={cfg.early_stopping_patience}, "
+                f"min_delta={cfg.early_stopping_min_delta})"
+            )
+            break
+
+    if cfg.early_stopping_patience > 0 and best_state_dict is not None:
+        model.load_state_dict(best_state_dict)
 
     # Save final model
     torch.save(model.state_dict(), output_dir / "final_model.pt")

@@ -196,6 +196,44 @@ Price and no-arbitrage outputs are diagnostics first, not separate target
 spaces. Out-of-distribution degradation ratios should use normalized errors
 rather than raw MAE alone.
 
+## Training Controls
+
+Training uses deterministic split and mask construction under the configured
+seed. The model code also seeds NumPy and PyTorch before model construction, so
+random initialization, surface order shuffling, Fourier-feature initialization,
+dropout, and PyTorch module defaults are seed-controlled within a run. The
+current implementation does not override PyTorch's default linear-layer
+initialization with a custom Xavier or Kaiming policy. That is intentional for
+now: initialization changes should be treated as an ablation only after the
+main protocol is stable.
+
+Validation early stopping is available but disabled by default. Use
+`--early-stopping-patience N` and optionally `--early-stopping-min-delta X` for
+screening or long paper-candidate runs. Runs that use early stopping must report
+the selected epoch and should keep the same patience rule across compared
+variants. Fixed-epoch runs remain the cleanest comparison when the training
+budget is the object being controlled.
+
+The default neural architecture uses residual MLP token encoding, Fourier
+geometry features, LayerNorm, dropout, and GELU activations, followed by a
+heterogeneous GAT/SAGE-style graph operator over strike-neighbor,
+maturity-neighbor, and liquidity-similarity edges. GELU is a standard modern
+choice for Transformer-style and residual MLP models. It is not claimed as a
+novel contribution. ReLU, SiLU, or ELU can be screened later, but activation
+search is lower priority than leakage control, baseline strength, and graph
+necessity ablations.
+
+Epoch budgets should be empirical rather than copied from unrelated IV-surface
+papers. Current working tiers are:
+
+| Purpose | Epochs | Notes |
+| --- | ---: | --- |
+| Pipeline smoke | 1-2 | Confirms artifacts and device path only. |
+| Screening | 10 | Useful for rough ranking, not a claim. |
+| A1 preliminary | 20 | Current default for local multi-seed development. |
+| Paper-candidate | 50 | Use if validation curves still improve at 20 epochs. |
+| Final selected variants | 50-100 | Use fixed budget or registered early stopping consistently. |
+
 ## Manuscript-Level Scorecard
 
 Headline tables should remain compact:

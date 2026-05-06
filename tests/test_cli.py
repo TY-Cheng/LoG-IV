@@ -96,6 +96,11 @@ def test_benchmark_protocol_exposes_postprocess_controls() -> None:
             "0.5",
             "--cross-view-alignment-weight",
             "0.1",
+            "--early-stopping-patience",
+            "8",
+            "--early-stopping-min-delta",
+            "0.0005",
+            "--skip-ood-predictions",
             "--quiet-postprocess",
         ]
     )
@@ -111,6 +116,9 @@ def test_benchmark_protocol_exposes_postprocess_controls() -> None:
     assert args.heteroscedastic_weight == pytest.approx(0.7)
     assert args.reliability_gate_weight == pytest.approx(0.5)
     assert args.cross_view_alignment_weight == pytest.approx(0.1)
+    assert args.early_stopping_patience == 8
+    assert args.early_stopping_min_delta == pytest.approx(0.0005)
+    assert args.skip_ood_predictions
     assert args.quiet_postprocess
 
 

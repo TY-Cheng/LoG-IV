@@ -309,6 +309,8 @@ def _training_config_from_args(
         greeks_weight=args.greeks_weight,
         device=args.device,
         torch_num_threads=args.torch_threads,
+        early_stopping_patience=args.early_stopping_patience,
+        early_stopping_min_delta=args.early_stopping_min_delta,
         decoded_regularizer_max_terms=args.decoded_regularizer_max_terms,
         baseline_preset=args.baseline_preset,
         baseline_eval_splits=_parse_split_scope(args.baseline_eval_splits),
@@ -750,7 +752,8 @@ def _cmd_benchmark_protocol(args: argparse.Namespace) -> None:
         f"use_liquidity_gate={args.use_liquidity_gate}, "
         f"no_arb_mode={args.no_arb_diagnostics_mode}, "
         f"no_arb_splits={args.no_arb_eval_splits}, "
-        f"no_arb_max_surfaces_per_split={args.no_arb_max_surfaces_per_split}",
+        f"no_arb_max_surfaces_per_split={args.no_arb_max_surfaces_per_split}, "
+        f"skip_ood_predictions={args.skip_ood_predictions}",
         flush=True,
     )
     report_path = Path(args.output_dir) / "data_expansion_report.json"
@@ -1163,6 +1166,12 @@ def _cmd_benchmark_protocol(args: argparse.Namespace) -> None:
                 use_liquidity_features=bool(variant["use_liquidity_features"]),
                 use_liquidity_gate=bool(variant["use_liquidity_gate"]),
             )
+            extra_prediction_splits = (
+                {"ood_jp": jp_graphs} if jp_graphs and not args.skip_ood_predictions else None
+            )
+            extra_prediction_surface_ids = (
+                {"ood_jp": jp_ids} if jp_ids and not args.skip_ood_predictions else None
+            )
             run_option_quote_dataset_experiment(
                 us_graphs,
                 us_ids,
@@ -1172,8 +1181,8 @@ def _cmd_benchmark_protocol(args: argparse.Namespace) -> None:
                 source_surface_count=int(us_stats["source_surface_count"]),
                 filtered_surface_count=int(us_stats["filtered_surface_count"]),
                 claim_label="real_us_mvp" if bool(acceptance["ok"]) else "diagnostic_only",
-                extra_prediction_splits={"ood_jp": jp_graphs} if jp_graphs else None,
-                extra_prediction_surface_ids={"ood_jp": jp_ids} if jp_ids else None,
+                extra_prediction_splits=extra_prediction_splits,
+                extra_prediction_surface_ids=extra_prediction_surface_ids,
             )
             row = _matrix_row(
                 Path(args.output_dir) / experiment_name,
@@ -1558,6 +1567,18 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--device", choices=["auto", "cpu", "cuda", "mps"], default="auto")
     parser.add_argument("--torch-threads", type=int, default=None)
     parser.add_argument(
+        "--early-stopping-patience",
+        type=int,
+        default=0,
+        help="Stop after this many epochs without validation improvement; 0 disables it.",
+    )
+    parser.add_argument(
+        "--early-stopping-min-delta",
+        type=float,
+        default=0.0,
+        help="Minimum validation-loss improvement required to reset early-stopping patience.",
+    )
+    parser.add_argument(
         "--baseline-preset",
         choices=["none", "fast", "full"],
         default="fast",
@@ -1690,6 +1711,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_benchmark.add_argument("--min-us-surfaces", type=int, default=1000)
     p_benchmark.add_argument("--min-us-dates", type=int, default=31)
     p_benchmark.add_argument("--min-jp-dates", type=int, default=20)
+    p_benchmark.add_argument(
+        "--skip-ood-predictions",
+        "--no-jp-ood-prediction",
+        action="store_true",
+        dest="skip_ood_predictions",
+        help=(
+            "Load JP data for gate checks when provided, but skip per-run JP OOD prediction "
+            "artifacts. Useful for screening on shared GPUs."
+        ),
+    )
     p_benchmark.add_argument(
         "--variants",
         type=str,
