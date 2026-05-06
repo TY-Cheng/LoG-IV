@@ -112,10 +112,18 @@ Interpretation:
 
 ## Preliminary 2-Epoch Model Screen On 2026-05-06
 
-Run family: `reports/runs/prelim_all_models_e2_stratified/`.
+Run families:
+
+- `reports/runs/prelim_all_models_e2_stratified/`;
+- `reports/runs/prelim_retry_lagos_loss_only_e2_stratified/`;
+- `reports/runs/prelim_retry_lagos_attn_only_e2_stratified/`;
+- `reports/runs/prelim_retry_lagos_hetero_full_e2_stratified/`;
+- `reports/runs/prelim_retry_lagos_random_edges_e2_stratified/`;
+- `reports/runs/prelim_retry_lagos_shuffled_edges_e2_stratified/`.
 
 Summary file:
-`reports/runs/prelim_all_models_e2_stratified/partial_summary_completed.csv`.
+`reports/runs/prelim_all_models_e2_stratified/partial_summary_completed.csv`,
+plus the retry run `benchmark_summary.csv` files listed above.
 
 This is a **partial engineering screen**, not benchmark evidence. It is useful
 for internal reporting on which implemented model families currently run and
@@ -140,45 +148,50 @@ Protocol:
 - validation / test masked rows: 19,964 / 19,942.
 
 The original all-model command stopped with exit code 137 during
-`lagos_loss_only` post-processing. Completed model artifacts are retained for
-the rows marked `complete`; `lagos_loss_only` trained but did not finish
-prediction or metrics summary. Later variants in the requested suite were not
-run in this command.
+`lagos_loss_only` post-processing. Completed model artifacts are retained from
+that command. Separate retry commands then completed `lagos_loss_only`,
+`lagos_attn_only`, `lagos_hetero_full`, `lagos_random_edges`, and
+`lagos_shuffled_edges`.
 
-| Variant | Status | Masked IV MAE | p90 abs error | Price MAE | vs train kNN | vs within kNN | Val loss |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `lagos_liq_feature_only` | complete | 0.0658 | 0.1023 | 0.0152 | +34.9% | +3.8% | 0.1378 |
-| `gnn_decoded_calendar_convexity` | complete | 0.0687 | 0.1313 | 0.0103 | +32.0% | -0.4% | 0.1405 |
-| `gnn_liq` | complete | 0.0695 | 0.1247 | 0.0131 | +31.2% | -1.6% | 0.1393 |
-| `set_context_mlp` | complete | 0.0743 | 0.1232 | 0.0072 | +26.4% | -8.7% | 0.1551 |
-| `gnn_no_liq` | complete | 0.0758 | 0.1374 | 0.0077 | +25.0% | -10.8% | 0.4472 |
-| `lagos_no_liquidity` | complete | 0.0797 | 0.1458 | 0.0077 | +21.0% | -16.6% | 0.4604 |
-| `lagos_scalar_gate` | complete | 0.0928 | 0.1861 | 0.0133 | +8.1% | -35.7% | 0.1614 |
-| `encoder_mlp` | complete | 0.1100 | 0.2142 | 0.0151 | -8.9% | -60.8% | 0.2032 |
-| `lagos_loss_only` | incomplete | n/a | n/a | n/a | n/a | n/a | n/a |
+| Variant | Status | Masked IV MAE | p90 abs error | Price MAE | vs train kNN | vs within kNN | Val loss | Source |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `lagos_loss_only` | complete | 0.0612 | 0.1043 | 0.0098 | +39.4% | +10.5% | -0.8221 | retry |
+| `lagos_liq_feature_only` | complete | 0.0658 | 0.1023 | 0.0152 | +34.9% | +3.8% | 0.1378 | all-model |
+| `gnn_decoded_calendar_convexity` | complete | 0.0687 | 0.1313 | 0.0103 | +32.0% | -0.4% | 0.1405 | all-model |
+| `gnn_liq` | complete | 0.0695 | 0.1247 | 0.0131 | +31.2% | -1.6% | 0.1393 | all-model |
+| `set_context_mlp` | complete | 0.0743 | 0.1232 | 0.0072 | +26.4% | -8.7% | 0.1551 | all-model |
+| `gnn_no_liq` | complete | 0.0758 | 0.1374 | 0.0077 | +25.0% | -10.8% | 0.4472 | all-model |
+| `lagos_hetero_full` | complete | 0.0787 | 0.1258 | 0.0207 | +22.1% | -15.1% | -0.8122 | retry |
+| `lagos_no_liquidity` | complete | 0.0797 | 0.1458 | 0.0077 | +21.0% | -16.6% | 0.4604 | all-model |
+| `lagos_attn_only` | complete | 0.0911 | 0.1433 | 0.0130 | +9.8% | -33.2% | 0.1705 | retry |
+| `lagos_scalar_gate` | complete | 0.0928 | 0.1861 | 0.0133 | +8.1% | -35.7% | 0.1614 | all-model |
+| `lagos_shuffled_edges` | complete | 0.0971 | 0.1929 | 0.0144 | +3.9% | -42.0% | 0.1745 | retry |
+| `lagos_random_edges` | complete | 0.1027 | 0.2033 | 0.0136 | -1.7% | -50.2% | 0.1961 | retry |
+| `encoder_mlp` | complete | 0.1100 | 0.2142 | 0.0151 | -8.9% | -60.8% | 0.2032 | all-model |
 
 Preliminary interpretation:
 
 - The two-epoch screen is directionally consistent with graph or set-context
   variants outperforming the encoder MLP, but two epochs are too short for a
   convergence claim.
-- `lagos_liq_feature_only` is best in this partial screen and is the only
-  completed variant that beats the within-surface kNN reference on masked IV
-  MAE. This is a screening signal, not evidence that liquidity features alone
-  are the final best mechanism.
+- `lagos_loss_only` is best in this completed screen and beats the
+  within-surface kNN reference by 10.5% on masked IV MAE. `lagos_liq_feature_only`
+  is the other completed variant that beats within-surface kNN after two
+  epochs.
 - `gnn_liq` and the decoded calendar/convexity GNN are close after two epochs.
   Their ordering should be judged only after the 20-epoch or longer candidate
   runs.
-- `lagos_loss_only` needs a separate recovery run or should be explicitly
-  marked unstable for this preliminary table.
+- `lagos_hetero_full` improves over the attention-only and scalar-gate LoG
+  ablations in this short run, but it does not beat within-surface kNN after two
+  epochs. Heteroscedastic loss values are not directly comparable with the
+  non-heteroscedastic validation losses.
+- `lagos_random_edges` and `lagos_shuffled_edges` are much weaker than the
+  standard graph variants in this screen, which is a useful negative-control
+  signal but not final evidence about graph topology.
 
 Remaining variants from the requested `anchor_proxy` suite still need separate
 screening runs:
 
-- `lagos_attn_only`;
-- `lagos_hetero_full`;
-- `lagos_random_edges`;
-- `lagos_shuffled_edges`;
 - `anchor_deep_smoothing_proxy`;
 - `anchor_operator_deep_smoothing_proxy`;
 - `anchor_hexagon_proxy`;
@@ -196,7 +209,7 @@ Required next evidence:
 - A1 `liquidity_correlated` mask;
 - A1 `block_wing` mask;
 - raw SVI per-expiry accounting with timeout and failure rates;
-- heteroscedastic graph-model ablation results;
+- promoted heteroscedastic graph-model ablation results;
 - ticker-holdout or other out-of-distribution evaluation;
 - liquidity-bucket and worst-bucket error tables;
 - error-versus-violation trade-off curves;
@@ -223,14 +236,16 @@ Do not present it as:
 
 ## Immediate Next Runs
 
-Run the remaining A1 mask regimes:
+Run the top stratified candidates under the remaining A1 mask regimes:
 
 ```bash
-just benchmark-a1 mask=liquidity_correlated
-just benchmark-a1 mask=block_wing
+just benchmark-a1 mask=liquidity_correlated seeds=1 epochs=2 variant_suite=anchor_proxy variants=lagos_loss_only,lagos_liq_feature_only,gnn_liq,gnn_decoded_calendar_convexity out=reports/runs/prelim_top4_liquidity_correlated_e2 baseline_preset=fast no_arb_surfaces=10 skip_ood=true
+just benchmark-a1 mask=block_wing seeds=1 epochs=2 variant_suite=anchor_proxy variants=lagos_loss_only,lagos_liq_feature_only,gnn_liq,gnn_decoded_calendar_convexity out=reports/runs/prelim_top4_block_wing_e2 baseline_preset=fast no_arb_surfaces=10 skip_ood=true
 ```
 
-Then run raw SVI accounting:
+If the top candidates still beat the strongest within-surface baseline under
+both masks, promote the short-run winners to longer candidate runs and raw SVI
+accounting:
 
 ```bash
 just benchmark-a1 mask=stratified baseline_preset=full out=reports/runs/benchmark_a1_full
