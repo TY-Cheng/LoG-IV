@@ -20,14 +20,8 @@ htmlcov/
 .ipynb_checkpoints/
 
 # Local data and outputs
-data/**
-!data/
-!data/bronze/
-!data/bronze/.gitkeep
-!data/silver/
-!data/silver/.gitkeep
-!data/gold/
-!data/gold/.gitkeep
+data/
+data.onedrive-backup-*/
 outputs/
 reports/**
 !reports/
