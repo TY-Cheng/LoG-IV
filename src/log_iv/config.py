@@ -7,10 +7,13 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-DEFAULT_DATA_DIR = Path("/Volumes/ExternalSSD/data/LoG-IV")
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config/default.toml"
+DEFAULT_DATA_DIR = PROJECT_ROOT / "data"
 DEFAULT_BRONZE_DATA_DIR = DEFAULT_DATA_DIR / "bronze"
 DEFAULT_SILVER_DATA_DIR = DEFAULT_DATA_DIR / "silver"
 DEFAULT_GOLD_DATA_DIR = DEFAULT_DATA_DIR / "gold"
+DEFAULT_REPORTS_DIR = PROJECT_ROOT / "reports"
 
 
 class ProjectSettings(BaseModel):
@@ -18,20 +21,31 @@ class ProjectSettings(BaseModel):
 
     project_name: str = Field(default="log-iv")
     data_dir: Path = Field(default=DEFAULT_DATA_DIR)
-    reports_dir: Path = Field(default=Path("reports"))
+    reports_dir: Path = Field(default=DEFAULT_REPORTS_DIR)
     log_level: str = Field(default="INFO")
 
     @classmethod
     def from_env(cls) -> ProjectSettings:
         return cls(
             project_name=os.environ.get("PROJECT_NAME", "log-iv"),
-            data_dir=Path(os.environ.get("DATA_DIR", str(DEFAULT_DATA_DIR))),
-            reports_dir=Path(os.environ.get("REPORTS_DIR", "reports")),
+            data_dir=path_from_env("DATA_DIR", DEFAULT_DATA_DIR),
+            reports_dir=path_from_env("REPORTS_DIR", DEFAULT_REPORTS_DIR),
             log_level=os.environ.get("LOG_LEVEL", "INFO"),
         )
 
 
-def load_research_config(path: Path = Path("config/default.toml")) -> dict[str, Any]:
+def path_from_env(name: str, default: Path) -> Path:
+    """Resolve env paths relative to the repo root unless they are absolute."""
+
+    raw_value = os.environ.get(name)
+    if raw_value is None or raw_value == "":
+        path = default
+    else:
+        path = Path(os.path.expanduser(os.path.expandvars(raw_value)))
+    return path if path.is_absolute() else PROJECT_ROOT / path
+
+
+def load_research_config(path: Path = DEFAULT_CONFIG_PATH) -> dict[str, Any]:
     """Load the static research scaffold configuration."""
 
     with path.open("rb") as handle:

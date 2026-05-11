@@ -170,9 +170,9 @@ data/silver/option_quotes/jp_option_quotes_expanded.parquet
 
 Current Japan status:
 
-- 531,280 deduplicated rows;
-- 31 usable option observation dates;
-- 6,179 usable surfaces after the same minimum-node gate.
+- 557,982 deduplicated rows;
+- 32 usable option observation dates;
+- 6,590 usable surfaces after the same minimum-node gate.
 
 Synthetic-LoG-IV is a reproducibility and controlled-diagnostic material. It
 should be used for oracle diagnostics and no-arbitrage sanity checks, not as a

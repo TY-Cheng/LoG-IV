@@ -31,6 +31,37 @@ except importlib_metadata.PackageNotFoundError:
     __version__ = "0.1.0"
 
 GRAPH_CACHE_VERSION = 1
+_RUN_NAME_ALIASES = {
+    "anp_baseline": "anp",
+    "anchor_deep_smoothing_proxy": "ds",
+    "anchor_hexagon_proxy": "hex",
+    "anchor_hyperiv_proxy": "hiv",
+    "anchor_operator_deep_smoothing_proxy": "ods",
+    "anchor_volnp_proxy": "vnp",
+    "block_wing": "bw",
+    "cnp_baseline": "cnp",
+    "encoder_mlp": "enc",
+    "gnn_decoded_calendar_convexity": "gdcc",
+    "gnn_liq": "gliq",
+    "gnn_no_liq": "g0",
+    "lagos_attn_only": "la",
+    "lagos_hetero_full": "lhf",
+    "lagos_liq_feature_only": "llf",
+    "lagos_loss_only": "llo",
+    "lagos_no_liquidity": "lnl",
+    "lagos_random_edges": "lre",
+    "lagos_scalar_gate": "lsg",
+    "lagos_shuffled_edges": "lse",
+    "liquidity_correlated": "lc",
+    "masked_reconstruction": "mr",
+    "observed_reconstruction": "or",
+    "random": "rnd",
+    "set_context_mlp": "set",
+    "stratified": "str",
+    "temporal": "t",
+    "temporal_ticker_holdout": "tth",
+    "ticker_holdout": "th",
+}
 
 
 def _cmd_status(args: argparse.Namespace) -> None:
@@ -63,6 +94,44 @@ def _cmd_status(args: argparse.Namespace) -> None:
     for k, v in key_status.items():
         print(f"  env        : {k}={'set' if v else 'missing'}")
     print("status ok")
+
+
+def _short_token(value: object, *, max_chars: int = 12) -> str:
+    text = str(value).strip().lower().replace("-", "_")
+    if text in _RUN_NAME_ALIASES:
+        return _RUN_NAME_ALIASES[text]
+    parts = [part for part in text.split("_") if part]
+    if len(parts) > 1:
+        candidate = "".join(part[0] for part in parts)
+    else:
+        candidate = "".join(ch for ch in text if ch.isalnum())
+    if not candidate:
+        candidate = hashlib.sha1(text.encode()).hexdigest()[:6]
+    return candidate[:max_chars]
+
+
+def _benchmark_run_name(
+    *,
+    market: str,
+    variant: str,
+    task: str,
+    split: str,
+    epochs: int,
+    seed: int,
+) -> str:
+    """Compact per-model run directory name; full metadata lives in manifests."""
+
+    return (
+        f"b-{_short_token(market, max_chars=4)}-{_short_token(variant)}-"
+        f"{_short_token(task, max_chars=4)}-{_short_token(split, max_chars=4)}-"
+        f"e{epochs}-s{seed}"
+    )
+
+
+def _matrix_run_name(*, market: str, variant: str, epochs: int, seed: int) -> str:
+    """Compact legacy matrix run directory name."""
+
+    return f"r-{_short_token(market, max_chars=4)}-{_short_token(variant)}-e{epochs}-s{seed}"
 
 
 def _cmd_source_probe(args: argparse.Namespace) -> None:
@@ -670,7 +739,12 @@ def _cmd_experiment_matrix(args: argparse.Namespace) -> None:
         ("jp", jp_graphs, jp_ids, jp_stats, "japan_ood_probe"),
     ]:
         for variant in variants:
-            experiment_name = f"real_{market_name}_{variant['name']}_{args.epochs}e_seed{args.seed}"
+            experiment_name = _matrix_run_name(
+                market=market_name,
+                variant=str(variant["name"]),
+                epochs=args.epochs,
+                seed=args.seed,
+            )
             print(f"\n=== Running {experiment_name} ===")
             config = _training_config_from_args(
                 args,
@@ -1139,9 +1213,13 @@ def _cmd_benchmark_protocol(args: argparse.Namespace) -> None:
     for seed in seeds:
         args.seed = seed
         for variant in variants:
-            experiment_name = (
-                f"benchmark_us_{variant['name']}_{args.task}_{args.split_mode}_"
-                f"{args.epochs}e_seed{seed}"
+            experiment_name = _benchmark_run_name(
+                market="us",
+                variant=str(variant["name"]),
+                task=str(args.task),
+                split=str(args.split_mode),
+                epochs=args.epochs,
+                seed=seed,
             )
             print(f"\n=== Running {experiment_name} ===")
             config = _training_config_from_args(

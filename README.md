@@ -80,12 +80,13 @@ This repo uses `uv` and `just`. The local virtual environment is controlled by
 
 ```bash
 UV_PROJECT_ENVIRONMENT="${HOME}/.venvs/log-iv"
-DATA_DIR="/Volumes/ExternalSSD/data/LoG-IV"
+DATA_DIR="data"
+REPORTS_DIR="reports"
 ```
 
-Keep the OneDrive checkout source/docs-only. Do not create a repo-local `data`
-directory or `data` symlink; data engineering reads and writes under the
-external `DATA_DIR`.
+Relative paths are resolved from the repo root. On a device that stores data
+elsewhere, set absolute paths in the ignored local `.env`; do not commit
+generated data or reports.
 
 Typical local checks:
 

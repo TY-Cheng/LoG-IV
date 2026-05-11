@@ -1,23 +1,56 @@
 from pathlib import Path
 from typing import Any
 
-from log_iv.config import DEFAULT_DATA_DIR, ProjectSettings, env_key_status, load_research_config
+from log_iv.config import (
+    DEFAULT_DATA_DIR,
+    DEFAULT_REPORTS_DIR,
+    PROJECT_ROOT,
+    ProjectSettings,
+    env_key_status,
+    load_research_config,
+)
 
 
 def test_project_settings_from_env_defaults(monkeypatch: Any) -> None:
     monkeypatch.delenv("PROJECT_NAME", raising=False)
     monkeypatch.delenv("DATA_DIR", raising=False)
+    monkeypatch.delenv("REPORTS_DIR", raising=False)
 
     settings = ProjectSettings.from_env()
 
     assert settings.project_name == "log-iv"
     assert settings.data_dir == DEFAULT_DATA_DIR
+    assert settings.reports_dir == DEFAULT_REPORTS_DIR
+
+
+def test_project_settings_resolves_relative_env_paths_from_repo_root(monkeypatch: Any) -> None:
+    monkeypatch.setenv("DATA_DIR", "local-data")
+    monkeypatch.setenv("REPORTS_DIR", "local-reports")
+
+    settings = ProjectSettings.from_env()
+
+    assert settings.data_dir == PROJECT_ROOT / "local-data"
+    assert settings.reports_dir == PROJECT_ROOT / "local-reports"
+
+
+def test_project_settings_keeps_absolute_env_paths(monkeypatch: Any, tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
+    reports_dir = tmp_path / "reports"
+    monkeypatch.setenv("DATA_DIR", str(data_dir))
+    monkeypatch.setenv("REPORTS_DIR", str(reports_dir))
+
+    settings = ProjectSettings.from_env()
+
+    assert settings.data_dir == data_dir
+    assert settings.reports_dir == reports_dir
 
 
 def test_load_research_config() -> None:
     config = load_research_config()
 
     assert config["project_slug"] == "log-iv"
+    assert config["data_dir"] == "data"
+    assert config["reports_dir"] == "reports"
     assert "SPY" in config["universe"]["us_mvp"]["underlyings"]
 
 

@@ -52,7 +52,7 @@ out-of-distribution evaluation setting rather than the primary empirical claim.
 | Dataset | Current role | Current status |
 | --- | --- | --- |
 | U.S. expanded options silver | Main masked-reconstruction benchmark | 2,979,716 rows, 40 underlyings, 62 observation dates, 2,480 usable surfaces. |
-| Japan expanded options silver | Out-of-distribution evaluation | 531,280 rows, 31 observation dates, 6,179 usable surfaces. |
+| Japan expanded options silver | Out-of-distribution evaluation | 557,982 rows, 32 observation dates, 6,590 usable surfaces. |
 | Synthetic-LoG-IV | Reproducibility and controlled diagnostics | Generator implemented; canonical release artifact still pending. |
 
 The U.S. data window is enough for masked-reconstruction benchmarking. It is not
@@ -61,6 +61,10 @@ yet enough for broad market-cycle or regime-generalization claims.
 ## A1 Stratified Result On 2026-05-04
 
 Run family: `reports/runs/benchmark_a1_stratified/`.
+
+Current artifact caveat: this directory is **not present locally** as of
+2026-05-11. Treat the table below as a recorded result that must be restored or
+rerun before final claims.
 
 Protocol:
 
@@ -116,14 +120,14 @@ This engineering screen is retained only as candidate-selection provenance. It
 does **not** supersede the A1 stratified benchmark, and it is superseded for
 current promotion decisions by the 2026-05-07 top4 mask-regime screen below.
 
-Run families:
+Archived run families:
 
-- `reports/runs/prelim_all_models_e2_stratified/`;
-- `reports/runs/prelim_retry_lagos_loss_only_e2_stratified/`;
-- `reports/runs/prelim_retry_lagos_attn_only_e2_stratified/`;
-- `reports/runs/prelim_retry_lagos_hetero_full_e2_stratified/`;
-- `reports/runs/prelim_retry_lagos_random_edges_e2_stratified/`;
-- `reports/runs/prelim_retry_lagos_shuffled_edges_e2_stratified/`.
+- `reports/archive/2026-05-11_legacy_prelim_runs/prelim_all_models_e2_stratified/`;
+- `reports/archive/2026-05-11_legacy_prelim_runs/prelim_retry_lagos_loss_only_e2_stratified/`;
+- `reports/archive/2026-05-11_legacy_prelim_runs/prelim_retry_lagos_attn_only_e2_stratified/`;
+- `reports/archive/2026-05-11_legacy_prelim_runs/prelim_retry_lagos_hetero_full_e2_stratified/`;
+- `reports/archive/2026-05-11_legacy_prelim_runs/prelim_retry_lagos_random_edges_e2_stratified/`;
+- `reports/archive/2026-05-11_legacy_prelim_runs/prelim_retry_lagos_shuffled_edges_e2_stratified/`.
 
 Key takeaways:
 
@@ -140,10 +144,10 @@ Key takeaways:
 
 ## Preliminary Top4 Mask-Regime Screen On 2026-05-07
 
-Run families:
+Archived run families:
 
-- `reports/runs/prelim_top4_liquidity_correlated_e2_liquidity_correlated/`;
-- `reports/runs/prelim_top4_block_wing_e2_block_wing/`.
+- `reports/archive/2026-05-11_legacy_prelim_runs/prelim_top4_liquidity_correlated_e2_liquidity_correlated/`;
+- `reports/archive/2026-05-11_legacy_prelim_runs/prelim_top4_block_wing_e2_block_wing/`.
 
 This screen reruns the top stratified candidates under two harder masking
 regimes. It is still a two-epoch, seed-1 engineering screen, not final

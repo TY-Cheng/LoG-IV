@@ -84,20 +84,20 @@ mix intraday and end-of-day semantics without explicit cutoff fields.
 ## Cache Layout
 
 ```text
-/Volumes/ExternalSSD/data/LoG-IV/bronze/  raw or lightly typed vendor payloads
-/Volumes/ExternalSSD/data/LoG-IV/silver/  normalized option tokens and calendars
-/Volumes/ExternalSSD/data/LoG-IV/gold/    modeling-ready graph batches and tasks
-reports/                                  local reports and run manifests
+data/bronze/  raw or lightly typed vendor payloads
+data/silver/  normalized option tokens and calendars
+data/gold/    modeling-ready graph batches and tasks
+reports/      local reports and run manifests
 ```
 
 Benchmark graph caches live under
-`/Volumes/ExternalSSD/data/LoG-IV/gold/graph_cache/`. They are keyed by the
+`data/gold/graph_cache/`. They are keyed by the
 source silver table fingerprint plus graph-loading controls such as
 `min_nodes_per_surface`, `max_nodes_per_surface`, and `max_surfaces`; use
 `--refresh-graph-cache` when intentionally rebuilding them.
 
-The OneDrive checkout should contain source and documentation only. Do not keep
-a repo-local `data` directory or `data` symlink in the checkout.
+Relative paths are resolved from the repo root. Use absolute paths in the
+ignored local `.env` when a device keeps generated artifacts elsewhere.
 
 ## Environment Contract
 
@@ -108,10 +108,10 @@ UV_PROJECT_ENVIRONMENT="${HOME}/.venvs/log-iv"
 PROJECT_NAME="log-iv"
 LOG_LEVEL="INFO"
 
-DATA_DIR="/Volumes/ExternalSSD/data/LoG-IV"
-BRONZE_DATA_DIR="/Volumes/ExternalSSD/data/LoG-IV/bronze"
-SILVER_DATA_DIR="/Volumes/ExternalSSD/data/LoG-IV/silver"
-GOLD_DATA_DIR="/Volumes/ExternalSSD/data/LoG-IV/gold"
+DATA_DIR="data"
+BRONZE_DATA_DIR="data/bronze"
+SILVER_DATA_DIR="data/silver"
+GOLD_DATA_DIR="data/gold"
 REPORTS_DIR="reports"
 
 MASSIVE_API_KEY_FILE=""
@@ -222,9 +222,9 @@ data/silver/option_quotes/jp_option_quotes_expanded.parquet
 
 It records:
 
-- 531,280 deduplicated rows;
-- 31 usable observation dates;
-- 6,179 usable `(underlying, observation_date)` surfaces under
+- 557,982 deduplicated rows;
+- 32 usable observation dates;
+- 6,590 usable `(underlying, observation_date)` surfaces under
   `min_nodes_per_surface=20`.
 
 ## U.S. To Japan Evaluation Gate
