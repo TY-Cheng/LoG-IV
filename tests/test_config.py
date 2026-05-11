@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Any
 
-from log_iv.config import ProjectSettings, env_key_status, load_research_config
+from log_iv.config import DEFAULT_DATA_DIR, ProjectSettings, env_key_status, load_research_config
 
 
 def test_project_settings_from_env_defaults(monkeypatch: Any) -> None:
@@ -11,7 +11,7 @@ def test_project_settings_from_env_defaults(monkeypatch: Any) -> None:
     settings = ProjectSettings.from_env()
 
     assert settings.project_name == "log-iv"
-    assert settings.data_dir == Path("data")
+    assert settings.data_dir == DEFAULT_DATA_DIR
 
 
 def test_load_research_config() -> None:

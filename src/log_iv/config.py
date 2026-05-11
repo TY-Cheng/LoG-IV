@@ -7,12 +7,17 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+DEFAULT_DATA_DIR = Path("/Volumes/ExternalSSD/data/LoG-IV")
+DEFAULT_BRONZE_DATA_DIR = DEFAULT_DATA_DIR / "bronze"
+DEFAULT_SILVER_DATA_DIR = DEFAULT_DATA_DIR / "silver"
+DEFAULT_GOLD_DATA_DIR = DEFAULT_DATA_DIR / "gold"
+
 
 class ProjectSettings(BaseModel):
     """Runtime paths loaded from environment variables."""
 
     project_name: str = Field(default="log-iv")
-    data_dir: Path = Field(default=Path("data"))
+    data_dir: Path = Field(default=DEFAULT_DATA_DIR)
     reports_dir: Path = Field(default=Path("reports"))
     log_level: str = Field(default="INFO")
 
@@ -20,7 +25,7 @@ class ProjectSettings(BaseModel):
     def from_env(cls) -> ProjectSettings:
         return cls(
             project_name=os.environ.get("PROJECT_NAME", "log-iv"),
-            data_dir=Path(os.environ.get("DATA_DIR", "data")),
+            data_dir=Path(os.environ.get("DATA_DIR", str(DEFAULT_DATA_DIR))),
             reports_dir=Path(os.environ.get("REPORTS_DIR", "reports")),
             log_level=os.environ.get("LOG_LEVEL", "INFO"),
         )

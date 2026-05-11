@@ -69,7 +69,7 @@ benchmark-a1 *args: _require-external-uv-env
       esac; \
     done; \
     skip_ood_arg=""; case "$skip_ood" in true|1|yes|on) skip_ood_arg="--skip-ood-predictions" ;; false|0|no|off) ;; *) echo "error: skip_ood must be true/false, got '$skip_ood'" >&2; exit 2 ;; esac; \
-    silver_dir="${SILVER_DATA_DIR:-${DATA_DIR:-data}/silver}"; \
+    silver_dir="${SILVER_DATA_DIR:-${DATA_DIR:-/Volumes/ExternalSSD/data/LoG-IV}/silver}"; \
     {{cli}} benchmark-protocol --us-data "${silver_dir}/option_quotes/us_option_quotes_expanded.parquet" --jp-data "${silver_dir}/option_quotes/jp_option_quotes_expanded.parquet" --output-dir "${out}_${mask}" --seeds "$seeds" --epochs "$epochs" --batch-size "$batch_size" --mask-regime "$mask" --min-us-surfaces 2400 --min-us-dates 60 --min-jp-dates 20 --max-nodes-per-surface "$max_nodes" --torch-threads "$torch_threads" --device "$device" --early-stopping-patience "$early_stopping_patience" --early-stopping-min-delta "$early_stopping_min_delta" --baseline-preset "$baseline_preset" --baseline-eval-splits val,test --no-arb-diagnostics-mode sampled_surface --no-arb-eval-splits val,test --no-arb-max-surfaces-per-split "$no_arb_surfaces" --variant-suite "$variant_suite" --variants "$variants" $skip_ood_arg
 
 _smoke-models out="/tmp/log_iv_model_smoke": _require-external-uv-env

@@ -84,19 +84,20 @@ mix intraday and end-of-day semantics without explicit cutoff fields.
 ## Cache Layout
 
 ```text
-data/bronze/   raw or lightly typed vendor payloads
-data/silver/   normalized option tokens, underlyings, calendars, and curves
-data/gold/     modeling-ready graph batches and task tables
-reports/       local reports, figures, model diagnostics, and run manifests
+/Volumes/ExternalSSD/data/LoG-IV/bronze/  raw or lightly typed vendor payloads
+/Volumes/ExternalSSD/data/LoG-IV/silver/  normalized option tokens and calendars
+/Volumes/ExternalSSD/data/LoG-IV/gold/    modeling-ready graph batches and tasks
+reports/                                  local reports and run manifests
 ```
 
-Benchmark graph caches live under `data/gold/graph_cache/`. They are keyed by
-the source silver table fingerprint plus graph-loading controls such as
+Benchmark graph caches live under
+`/Volumes/ExternalSSD/data/LoG-IV/gold/graph_cache/`. They are keyed by the
+source silver table fingerprint plus graph-loading controls such as
 `min_nodes_per_surface`, `max_nodes_per_surface`, and `max_surfaces`; use
 `--refresh-graph-cache` when intentionally rebuilding them.
 
-The contents of these directories are ignored by git except for `.gitkeep`
-placeholders.
+The OneDrive checkout should contain source and documentation only. Do not keep
+a repo-local `data` directory or `data` symlink in the checkout.
 
 ## Environment Contract
 
@@ -107,10 +108,10 @@ UV_PROJECT_ENVIRONMENT="${HOME}/.venvs/log-iv"
 PROJECT_NAME="log-iv"
 LOG_LEVEL="INFO"
 
-DATA_DIR="data"
-BRONZE_DATA_DIR="data/bronze"
-SILVER_DATA_DIR="data/silver"
-GOLD_DATA_DIR="data/gold"
+DATA_DIR="/Volumes/ExternalSSD/data/LoG-IV"
+BRONZE_DATA_DIR="/Volumes/ExternalSSD/data/LoG-IV/bronze"
+SILVER_DATA_DIR="/Volumes/ExternalSSD/data/LoG-IV/silver"
+GOLD_DATA_DIR="/Volumes/ExternalSSD/data/LoG-IV/gold"
 REPORTS_DIR="reports"
 
 MASSIVE_API_KEY_FILE=""

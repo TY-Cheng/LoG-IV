@@ -1,5 +1,5 @@
 project_slug = "log-iv"
-data_dir = "data"
+data_dir = "/Volumes/ExternalSSD/data/LoG-IV"
 reports_dir = "reports"
 timezone_us = "America/New_York"
 timezone_jp = "Asia/Tokyo"

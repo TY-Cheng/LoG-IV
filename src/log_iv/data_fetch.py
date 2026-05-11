@@ -26,6 +26,7 @@ import httpx
 import numpy as np
 import pandas as pd
 
+from log_iv.config import DEFAULT_BRONZE_DATA_DIR, DEFAULT_GOLD_DATA_DIR, DEFAULT_SILVER_DATA_DIR
 from log_iv.schema import OptionQuote, OptionType
 
 DEFAULT_US_TICKERS = ["SPY", "QQQ", "AAPL", "MSFT", "NVDA"]
@@ -51,9 +52,9 @@ _DOTENV_LOADED = False
 class DataFetchConfig:
     """Small-sample ingestion configuration."""
 
-    bronze_dir: Path = Path("data/bronze")
-    silver_dir: Path = Path("data/silver")
-    gold_dir: Path = Path("data/gold")
+    bronze_dir: Path = DEFAULT_BRONZE_DATA_DIR
+    silver_dir: Path = DEFAULT_SILVER_DATA_DIR
+    gold_dir: Path = DEFAULT_GOLD_DATA_DIR
     reports_dir: Path = Path("reports")
     us_tickers: list[str] = field(default_factory=lambda: DEFAULT_US_TICKERS.copy())
     jp_tickers: list[str] = field(default_factory=lambda: DEFAULT_JP_TICKERS.copy())
@@ -70,9 +71,9 @@ class DataFetchConfig:
     def from_env(cls) -> DataFetchConfig:
         _load_local_dotenv()
         return cls(
-            bronze_dir=Path(os.environ.get("BRONZE_DATA_DIR", "data/bronze")),
-            silver_dir=Path(os.environ.get("SILVER_DATA_DIR", "data/silver")),
-            gold_dir=Path(os.environ.get("GOLD_DATA_DIR", "data/gold")),
+            bronze_dir=Path(os.environ.get("BRONZE_DATA_DIR", str(DEFAULT_BRONZE_DATA_DIR))),
+            silver_dir=Path(os.environ.get("SILVER_DATA_DIR", str(DEFAULT_SILVER_DATA_DIR))),
+            gold_dir=Path(os.environ.get("GOLD_DATA_DIR", str(DEFAULT_GOLD_DATA_DIR))),
             reports_dir=Path(os.environ.get("REPORTS_DIR", "reports")),
             request_timeout_seconds=_env_float("REQUEST_TIMEOUT_SECONDS", 30.0),
             max_retries=_env_int("MAX_RETRIES", 2),

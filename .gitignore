@@ -20,8 +20,9 @@ htmlcov/
 .ipynb_checkpoints/
 
 # Local data and outputs
-data/
-data.onedrive-backup-*/
+# Data lives on /Volumes/ExternalSSD/data/LoG-IV, never as a OneDrive symlink.
+/data
+/data.onedrive-backup-*
 outputs/
 reports/**
 !reports/

@@ -460,7 +460,9 @@ def _graph_cache_payload_and_path(
         "max_surfaces": max_surfaces,
     }
     digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
-    cache_dir = Path(os.environ.get("GOLD_DATA_DIR", "data/gold")) / "graph_cache"
+    from log_iv.config import DEFAULT_GOLD_DATA_DIR
+
+    cache_dir = Path(os.environ.get("GOLD_DATA_DIR", str(DEFAULT_GOLD_DATA_DIR))) / "graph_cache"
     return payload, cache_dir / f"{source_path.stem}_{digest}.pkl"
 
 
