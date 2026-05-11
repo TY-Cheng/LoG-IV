@@ -557,14 +557,14 @@ Mitigations:
 1. Run longer candidate top2 masks:
 
    ```bash
-   just benchmark-a1 mask=liquidity_correlated seeds=1 epochs=20 variant_suite=anchor_proxy variants=lagos_liq_feature_only,gnn_decoded_calendar_convexity out=reports/runs/candidate_top2_liquidity_correlated_e20 baseline_preset=fast no_arb_surfaces=50 skip_ood=true
-   just benchmark-a1 mask=block_wing seeds=1 epochs=20 variant_suite=anchor_proxy variants=lagos_liq_feature_only,gnn_decoded_calendar_convexity out=reports/runs/candidate_top2_block_wing_e20 baseline_preset=fast no_arb_surfaces=50 skip_ood=true
+   just benchmark-a1 mask=liquidity_correlated seeds=1 epochs=20 variant_suite=anchor_proxy variants=lagos_liq_feature_only,gnn_decoded_calendar_convexity out=reports/runs/a1-e20 baseline_preset=fast no_arb_surfaces=50 skip_ood=true
+   just benchmark-a1 mask=block_wing seeds=1 epochs=20 variant_suite=anchor_proxy variants=lagos_liq_feature_only,gnn_decoded_calendar_convexity out=reports/runs/a1-e20 baseline_preset=fast no_arb_surfaces=50 skip_ood=true
    ```
 
 2. Run raw SVI accounting on the promoted setting:
 
    ```bash
-   just benchmark-a1 mask=stratified baseline_preset=full out=reports/runs/benchmark_a1_full
+   just benchmark-a1 mask=stratified baseline_preset=full out=reports/runs/a1-full
    ```
 
 3. If the top2 candidates remain stable, rerun selected masks with at least

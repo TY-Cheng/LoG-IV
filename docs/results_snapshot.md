@@ -47,6 +47,15 @@ out-of-distribution evaluation setting rather than the primary empirical claim.
   AR(1) SSVI-style surfaces, diagnostic-only fields, stable logical hashing,
   and no-arbitrage diagnostics for controlled tests.
 
+## Run Directory Naming
+
+Run directories use compact aliases so artifacts stay portable across WSL,
+Windows Explorer, and archive destinations. Family directories should look like
+`a1-e20-lc` or `a1-full-str`; per-model directories should look like
+`b-us-gdcc-mr-t-e20-s1`. Full names for model variant, task, split, mask
+regime, and protocol settings belong in `manifest.json`, `benchmark_summary.csv`,
+and this evidence ledger, not in long folder names.
+
 ## Current Data
 
 | Dataset | Current role | Current status |
@@ -60,7 +69,7 @@ yet enough for broad market-cycle or regime-generalization claims.
 
 ## A1 Stratified Result On 2026-05-04
 
-Run family: `reports/runs/benchmark_a1_stratified/`.
+Run family: `reports/runs/a1-str/`.
 
 Current artifact caveat: this directory is **not present locally** as of
 2026-05-11. Treat the table below as a recorded result that must be restored or
@@ -85,7 +94,7 @@ Protocol:
 - test starts on 2026-04-17.
 
 Headline table from
-`reports/runs/benchmark_a1_stratified/benchmark_summary.csv`:
+`reports/runs/a1-str/benchmark_summary.csv`:
 
 | Variant | Masked IV MAE | p90 abs error | Price MAE | vs train kNN | vs within kNN | Calendar viol. | Convexity viol. |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -122,12 +131,12 @@ current promotion decisions by the 2026-05-07 top4 mask-regime screen below.
 
 Archived run families:
 
-- `reports/archive/2026-05-11_legacy_prelim_runs/prelim_all_models_e2_stratified/`;
-- `reports/archive/2026-05-11_legacy_prelim_runs/prelim_retry_lagos_loss_only_e2_stratified/`;
-- `reports/archive/2026-05-11_legacy_prelim_runs/prelim_retry_lagos_attn_only_e2_stratified/`;
-- `reports/archive/2026-05-11_legacy_prelim_runs/prelim_retry_lagos_hetero_full_e2_stratified/`;
-- `reports/archive/2026-05-11_legacy_prelim_runs/prelim_retry_lagos_random_edges_e2_stratified/`;
-- `reports/archive/2026-05-11_legacy_prelim_runs/prelim_retry_lagos_shuffled_edges_e2_stratified/`.
+- `reports/archive/20260511-legacy/p-all-e2-str/`;
+- `reports/archive/20260511-legacy/p-llo-e2-str/`;
+- `reports/archive/20260511-legacy/p-la-e2-str/`;
+- `reports/archive/20260511-legacy/p-lhf-e2-str/`;
+- `reports/archive/20260511-legacy/p-lre-e2-str/`;
+- `reports/archive/20260511-legacy/p-lse-e2-str/`.
 
 Key takeaways:
 
@@ -146,8 +155,8 @@ Key takeaways:
 
 Archived run families:
 
-- `reports/archive/2026-05-11_legacy_prelim_runs/prelim_top4_liquidity_correlated_e2_liquidity_correlated/`;
-- `reports/archive/2026-05-11_legacy_prelim_runs/prelim_top4_block_wing_e2_block_wing/`.
+- `reports/archive/20260511-legacy/p-top4-e2-lc/`;
+- `reports/archive/20260511-legacy/p-top4-e2-bw/`.
 
 This screen reruns the top stratified candidates under two harder masking
 regimes. It is still a two-epoch, seed-1 engineering screen, not final
@@ -233,14 +242,14 @@ Do not present it as:
 Promote the two candidates that passed the top4 mask-regime screen:
 
 ```bash
-just benchmark-a1 mask=liquidity_correlated seeds=1 epochs=20 variant_suite=anchor_proxy variants=lagos_liq_feature_only,gnn_decoded_calendar_convexity out=reports/runs/candidate_top2_liquidity_correlated_e20 baseline_preset=fast no_arb_surfaces=50 skip_ood=true
-just benchmark-a1 mask=block_wing seeds=1 epochs=20 variant_suite=anchor_proxy variants=lagos_liq_feature_only,gnn_decoded_calendar_convexity out=reports/runs/candidate_top2_block_wing_e20 baseline_preset=fast no_arb_surfaces=50 skip_ood=true
+just benchmark-a1 mask=liquidity_correlated seeds=1 epochs=20 variant_suite=anchor_proxy variants=lagos_liq_feature_only,gnn_decoded_calendar_convexity out=reports/runs/a1-e20 baseline_preset=fast no_arb_surfaces=50 skip_ood=true
+just benchmark-a1 mask=block_wing seeds=1 epochs=20 variant_suite=anchor_proxy variants=lagos_liq_feature_only,gnn_decoded_calendar_convexity out=reports/runs/a1-e20 baseline_preset=fast no_arb_surfaces=50 skip_ood=true
 ```
 
 Then run raw SVI accounting on the promoted setting:
 
 ```bash
-just benchmark-a1 mask=stratified baseline_preset=full out=reports/runs/benchmark_a1_full
+just benchmark-a1 mask=stratified baseline_preset=full out=reports/runs/a1-full
 ```
 
 Promotion gate: `lagos_liq_feature_only` should remain ahead of train-only and

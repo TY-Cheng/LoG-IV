@@ -10,7 +10,14 @@ from unittest.mock import patch
 import pandas as pd
 import pytest
 
-from log_iv.cli import _load_option_surface_graphs, _read_baseline_rows, build_parser, main
+from log_iv.cli import (
+    _benchmark_run_name,
+    _load_option_surface_graphs,
+    _matrix_run_name,
+    _read_baseline_rows,
+    build_parser,
+    main,
+)
 from log_iv.schema import OptionQuote
 
 
@@ -34,6 +41,28 @@ def test_source_probe_selects_all_sources() -> None:
 
     assert args.source == "massive"
     assert args.mode == "rest"
+
+
+def test_generated_run_names_are_compact() -> None:
+    benchmark_name = _benchmark_run_name(
+        market="us",
+        variant="gnn_decoded_calendar_convexity",
+        task="masked_reconstruction",
+        split="temporal",
+        epochs=20,
+        seed=1,
+    )
+    matrix_name = _matrix_run_name(
+        market="us",
+        variant="lagos_liq_feature_only",
+        epochs=2,
+        seed=1,
+    )
+
+    assert benchmark_name == "b-us-gdcc-mr-t-e20-s1"
+    assert matrix_name == "r-us-llf-e2-s1"
+    assert len(benchmark_name) < 32
+    assert len(matrix_name) < 32
 
 
 def test_data_expansion_exposes_market_and_date_loop_controls() -> None:

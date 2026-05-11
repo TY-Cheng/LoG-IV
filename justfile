@@ -46,7 +46,7 @@ data start="2026-02-02" end="2026-04-30" max_workers="4" max_jp_dates="35": _req
 
 benchmark-a1 *args: _require-external-uv-env
     @set -- {{args}}; \
-    reports_dir="${REPORTS_DIR:-reports}"; mask="stratified"; out="${reports_dir}/runs/benchmark_a1"; seeds="1,2,3"; epochs="20"; batch_size="8"; max_nodes="250"; torch_threads="6"; device="auto"; baseline_preset="fast"; no_arb_surfaces="100"; variant_suite="core"; variants=""; skip_ood="false"; early_stopping_patience="0"; early_stopping_min_delta="0.0"; \
+    reports_dir="${REPORTS_DIR:-reports}"; mask="stratified"; out="${reports_dir}/runs/a1"; seeds="1,2,3"; epochs="20"; batch_size="8"; max_nodes="250"; torch_threads="6"; device="auto"; baseline_preset="fast"; no_arb_surfaces="100"; variant_suite="core"; variants=""; skip_ood="false"; early_stopping_patience="0"; early_stopping_min_delta="0.0"; \
     for arg in "$@"; do \
       case "$arg" in \
         mask=*) mask="${arg#mask=}" ;; \
@@ -70,8 +70,9 @@ benchmark-a1 *args: _require-external-uv-env
       esac; \
     done; \
     skip_ood_arg=""; case "$skip_ood" in true|1|yes|on) skip_ood_arg="--skip-ood-predictions" ;; false|0|no|off) ;; *) echo "error: skip_ood must be true/false, got '$skip_ood'" >&2; exit 2 ;; esac; \
+    case "$mask" in stratified) mask_slug="str" ;; liquidity_correlated) mask_slug="lc" ;; block_wing) mask_slug="bw" ;; random) mask_slug="rnd" ;; *) mask_slug="$mask" ;; esac; \
     silver_dir="${SILVER_DATA_DIR:-${DATA_DIR:-data}/silver}"; \
-    {{cli}} benchmark-protocol --us-data "${silver_dir}/option_quotes/us_option_quotes_expanded.parquet" --jp-data "${silver_dir}/option_quotes/jp_option_quotes_expanded.parquet" --output-dir "${out}_${mask}" --seeds "$seeds" --epochs "$epochs" --batch-size "$batch_size" --mask-regime "$mask" --min-us-surfaces 2400 --min-us-dates 60 --min-jp-dates 20 --max-nodes-per-surface "$max_nodes" --torch-threads "$torch_threads" --device "$device" --early-stopping-patience "$early_stopping_patience" --early-stopping-min-delta "$early_stopping_min_delta" --baseline-preset "$baseline_preset" --baseline-eval-splits val,test --no-arb-diagnostics-mode sampled_surface --no-arb-eval-splits val,test --no-arb-max-surfaces-per-split "$no_arb_surfaces" --variant-suite "$variant_suite" --variants "$variants" $skip_ood_arg
+    {{cli}} benchmark-protocol --us-data "${silver_dir}/option_quotes/us_option_quotes_expanded.parquet" --jp-data "${silver_dir}/option_quotes/jp_option_quotes_expanded.parquet" --output-dir "${out}-${mask_slug}" --seeds "$seeds" --epochs "$epochs" --batch-size "$batch_size" --mask-regime "$mask" --min-us-surfaces 2400 --min-us-dates 60 --min-jp-dates 20 --max-nodes-per-surface "$max_nodes" --torch-threads "$torch_threads" --device "$device" --early-stopping-patience "$early_stopping_patience" --early-stopping-min-delta "$early_stopping_min_delta" --baseline-preset "$baseline_preset" --baseline-eval-splits val,test --no-arb-diagnostics-mode sampled_surface --no-arb-eval-splits val,test --no-arb-max-surfaces-per-split "$no_arb_surfaces" --variant-suite "$variant_suite" --variants "$variants" $skip_ood_arg
 
 _smoke-models out="/tmp/log_iv_model_smoke": _require-external-uv-env
     @rm -rf "{{ out }}"
