@@ -7,8 +7,9 @@ hide:
 
 ## Documentation Map
 
-- [Results Snapshot](results_snapshot.md): current evidence ledger, expanded data
-  gates, benchmark results, and manuscript-readiness boundaries.
+- [Results Snapshot](results_snapshot.md): Results and Discussion snapshot with
+  current data gates, experiment outcomes, interpretations, missing evidence,
+  and manuscript-readiness boundaries.
 - [Research Plan](paper_plan.md): research question, contribution target, execution
   gates, claim ladder, and manuscript-level boundaries.
 - [Data](data.md): source roles, option identifiers, timestamp policy, expanded
@@ -30,8 +31,8 @@ hide:
 
 ## Reading Order
 
-1. Start with the [Results Snapshot](results_snapshot.md) to see what evidence
-   currently exists.
+1. Start with the [Results Snapshot](results_snapshot.md) to see current
+   results, interpretations, missing evidence, and next runs.
 2. Use the [Research Plan](paper_plan.md) as the current research contract.
 3. Read [Data](data.md) before changing ingestion, IV inversion, or
    out-of-distribution scope.

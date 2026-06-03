@@ -11,7 +11,7 @@ assumptions, and out-of-distribution data gates.
 | Massive U.S. equities | Underlying prices, returns, realized-volatility controls | Flat-file stock daily closes work locally | Current IV inversion uses same-date `us_stocks_sip/day_aggs_v1` closes as spot/forward proxies. |
 | Massive U.S. options | U.S. option chains, quotes, trades, or aggregates depending entitlement | OPRA daily flat-file expansion works locally | Current expanded U.S. silver has 2,480 usable surfaces after filtering. |
 | J-Quants equities | Japanese underlying prices and corporate-action context | V2 API-key probe works locally | Needed for Japan out-of-distribution features and realized-volatility targets. |
-| J-Quants derivatives/options | Japanese listed option or derivatives chains where available | V2 date-loop expansion works locally | Current expanded Japan silver has 31 usable observation dates. |
+| J-Quants derivatives/options | Japanese listed option or derivatives chains where available | V2 date-loop expansion works locally | Current expanded Japan silver has 32 usable observation dates. |
 | Public calendars | U.S. and Japan trading sessions and holidays | Core public dependency | Needed for date alignment and cutoff validity. |
 | Public rates/dividends | Risk-free curves, dividend proxies, and robustness controls | Candidate public dependency | Needed before inferred-IV and no-arbitrage diagnostics become paper claims. |
 
@@ -223,8 +223,10 @@ data/silver/option_quotes/jp_option_quotes_expanded.parquet
 It records:
 
 - 557,982 deduplicated rows;
-- 32 usable observation dates;
-- 6,590 usable `(underlying, observation_date)` surfaces under
+- 249 underlyings;
+- 32 observation dates and 32 usable observation dates;
+- 557,982 IV-usable rows;
+- 7,488 usable `(underlying, observation_date)` surfaces under
   `min_nodes_per_surface=20`.
 
 ## U.S. To Japan Evaluation Gate

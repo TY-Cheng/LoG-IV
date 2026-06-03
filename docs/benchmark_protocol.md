@@ -33,7 +33,7 @@ The benchmark may run only when the data gate passes:
 | Market | Gate | Current status |
 | --- | --- | --- |
 | U.S. | At least 2,400 usable `(underlying, observation_date)` surfaces after `min_nodes_per_surface=20` | Pass: 2,480 usable surfaces in the current expanded silver table. |
-| Japan | At least 20 usable option observation dates for out-of-distribution evaluation | Pass: 31 usable dates in the current expanded silver table. |
+| Japan | At least 20 usable option observation dates for out-of-distribution evaluation | Pass: 32 usable dates in the current expanded silver table. |
 
 If the gate fails, the CLI writes a data-expansion report and exits before
 training. This is intended behavior, not a training crash.
