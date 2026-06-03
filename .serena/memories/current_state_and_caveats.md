@@ -3,6 +3,11 @@
 Updated from `/home/tycheng/projects/LoG-IV` on 2026-05-11 after live repo,
 data, docs, result-artifact, and `just check` verification.
 
+Rechecked on 2026-06-03 from the same WSL workspace. Current branch `main` is
+aligned with `origin/main`, the git worktree was clean before this memory
+refresh, data/reports/artifact state still matches the 2026-05-11 readiness
+assessment, and `log_iv.cli status` passed under CPython 3.13.13.
+
 ## Local Execution Status
 
 - Project is activated in Serena as `LoG-IV`.
@@ -32,10 +37,10 @@ data, docs, result-artifact, and `just check` verification.
 ## Current Git/Docs State
 
 - `main` and `origin/main` were aligned when checked: `HEAD...origin/main = 0 0`.
-- Current uncommitted tracked edits are docs-oriented: paper-plan restructuring,
-  Results and Discussion snapshot restructuring, and live data-count alignment.
-- `.serena/` is currently visible as an untracked directory because `.gitignore`
-  no longer ignores it.
+- The 2026-06-03 recheck found no uncommitted tracked or untracked changes before
+  this memory refresh.
+- `.serena/` memories and project config are tracked; `.serena/project.local.yml`
+  and `.serena/cache/` remain locally ignored.
 - `docs/paper_plan.md` is a paper-style plan with Introduction, Literature
   Review, Materials and Methods including a preprocessing Mermaid chart,
   Expected Experiments, Results Reporting Plan, Discussion Plan, Reviewer Risks,
