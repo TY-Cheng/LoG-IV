@@ -7,11 +7,12 @@ hide:
 
 ## Documentation Map
 
-- [Results Snapshot](results_snapshot.md): Results and Discussion snapshot with
-  current data gates, experiment outcomes, interpretations, missing evidence,
-  and manuscript-readiness boundaries.
-- [Research Plan](paper_plan.md): research question, contribution target, execution
-  gates, claim ladder, and manuscript-level boundaries.
+- [Results And Discussion](results_snapshot.md): live results chapter with data
+  gates, experiment outcomes, tables/figure register, interpretations, missing
+  evidence, and manuscript-readiness boundaries.
+- [Paper Plan](paper_plan.md): manuscript skeleton with the research question,
+  contribution target, methods, expected experiments, claim ladder, and
+  manuscript-level boundaries.
 - [Data](data.md): source roles, option identifiers, timestamp policy, expanded
   silver artifacts, IV-inversion assumptions, and U.S./Japan
   out-of-distribution data gates.
@@ -31,9 +32,9 @@ hide:
 
 ## Reading Order
 
-1. Start with the [Results Snapshot](results_snapshot.md) to see current
-   results, interpretations, missing evidence, and next runs.
-2. Use the [Research Plan](paper_plan.md) as the current research contract.
+1. Start with [Results And Discussion](results_snapshot.md) to see current
+   results, interpretations, missing evidence, tables/figures, and next runs.
+2. Use the [Paper Plan](paper_plan.md) as the current manuscript contract.
 3. Read [Data](data.md) before changing ingestion, IV inversion, or
    out-of-distribution scope.
 4. Read [Benchmark Protocol](benchmark_protocol.md) before changing train/test

@@ -115,15 +115,16 @@ J-Quants V2 uses API-key authentication through the `x-api-key` header; the live
 credential probe is now part of `just check`.
 
 To reproduce recorded benchmark families, use the commands listed in
-`docs/results_snapshot.md`. These are intentionally not all separate `just`
-recipes; `just check` remains the main local verification gate.
+`docs/results_snapshot.md`, the live Results and Discussion chapter. These are
+intentionally not all separate `just` recipes; `just check` remains the main
+local verification gate.
 
 The main benchmark entrypoint is:
 
 ```bash
 just data-v1-us
 just data-jp
-just benchmark-a1 stratified
+just benchmark-a1 mask=stratified
 ```
 
 By default it requires masked reconstruction, temporal splits, three seeds, and
@@ -132,8 +133,8 @@ local data do not meet that gate, it writes
 `reports/runs/data_expansion_report.json` instead of promoting a run.
 The data-expansion report records expanded silver paths, deduplication counts,
 distinct dates, ticker universe, data-stage label, and IV-usable surface gates.
-The current short-window expanded U.S. table is `data_v0`; the next target is
-`data_v1`, using the same 40 tickers over 2026-02-02 through 2026-04-30.
+The current short-window expanded U.S. table is `data_v1`, using the same 40
+tickers over 2026-02-02 through 2026-04-30.
 Current Massive day aggregates provide price rows but no vendor IV, so the U.S.
 adapter infers IV from same-date U.S. stock closes with a zero-rate,
 zero-dividend Black-forward inversion. Treat these as inferred engineering
@@ -166,10 +167,11 @@ Never commit vendor secrets or licensed raw payloads.
 
 ## Documentation
 
-- `docs/results_snapshot.md`: current evidence ledger, data gates, benchmark
-  results, and manuscript-readiness boundaries.
-- `docs/paper_plan.md`: research plan, tasks, baselines, metrics, and
-  claim boundaries.
+- `docs/results_snapshot.md`: live Results and Discussion chapter with current
+  evidence, data gates, benchmark results, tables/figures, interpretations, and
+  manuscript-readiness boundaries.
+- `docs/paper_plan.md`: paper plan and manuscript skeleton covering the
+  research question, methods, experiments, metrics, and claim boundaries.
 - `docs/data.md`: source roles, option identifiers, timestamp policy, expanded
   silver artifacts, IV-inversion assumptions, and out-of-distribution data
   gates.

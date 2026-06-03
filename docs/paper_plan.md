@@ -19,6 +19,11 @@ The first manuscript should not contain a trading backtest. Japan is an
 out-of-distribution evaluation setting, not evidence for a cross-market causal
 claim.
 
+This document is organized as the intended manuscript skeleton. It separates
+the paper-facing argument from the live evidence ledger in
+`docs/results_snapshot.md`, the live Results and Discussion chapter that is
+completed as benchmark artifacts are accepted.
+
 ## 1. Introduction
 
 ### 1.1 Overview And Motivation
@@ -45,12 +50,25 @@ constraints that are easy to miss in clean grid tasks:
 - observed quotes are noisy, and liquidity variables are plausible indicators
   of quote precision.
 
-### 1.2 Existing Results And Research Gap
+### 1.2 Literature Positioning And Existing Results
 
 Neural IV smoothing, operator models, graph attention models, and neural-process
 models already show that flexible function approximators can fit or complete IV
 surfaces. The gap for this paper is not "neural networks for IV surfaces" in
-general. The gap is an auditable benchmark for irregular option graphs with:
+general. Section 2 gives the detailed literature review; the introduction
+should summarize the relevant prior families and then state what LoG-IV adds.
+
+The current internal evidence suggests that graph variants can substantially
+beat train-only and within-surface interpolation baselines under stratified
+masking. However, the current evidence is not final manuscript evidence because
+harder-mask confirmation, full SVI accounting, OOD evaluation, reliability
+analysis, and final figures are still pending. The Results and Discussion
+document must mark each result as complete, incomplete, candidate-selection, or
+pending.
+
+### 1.3 Research Gap
+
+The manuscript gap is an auditable benchmark for irregular option graphs with:
 
 - strict masked-node leakage controls;
 - market-relevant missingness regimes;
@@ -59,13 +77,7 @@ general. The gap is an auditable benchmark for irregular option graphs with:
 - reconstruction metrics reported together with price and no-arbitrage
   diagnostics.
 
-The current internal evidence suggests that graph variants can substantially
-beat train-only and within-surface interpolation baselines under stratified
-masking. However, the current evidence is not final manuscript evidence because
-harder-mask confirmation, full SVI accounting, OOD evaluation, reliability
-analysis, and final figures are still pending.
-
-### 1.3 Core Research Question
+### 1.4 Core Research Question
 
 Can graph models reconstruct sparse and irregular option-implied-volatility
 surfaces under leakage-controlled masking and liquidity-dependent observation
@@ -81,7 +93,7 @@ The question decomposes into three testable sub-questions:
 - **Protocol robustness:** do gains survive realistic missingness, strict
   leakage controls, and out-of-distribution evaluation?
 
-### 1.4 Contributions
+### 1.5 Contributions
 
 The contribution claim should stay narrow and auditable:
 
@@ -98,7 +110,7 @@ The contribution claim should stay narrow and auditable:
    decoded-price error, reliability diagnostics, and sampled no-arbitrage
    violation counts.
 
-### 1.5 Claim Boundary
+### 1.6 Claim Boundary
 
 Do not claim novelty for any of the following by themselves:
 
@@ -111,7 +123,7 @@ The defensible novelty, if the evidence gate passes, is the combination of
 leakage-controlled masking, irregular graph evaluation, liquidity-reliability
 ablation, and missingness-aware diagnostics.
 
-## 2. Literature Review
+## 2. Detailed Literature Review
 
 ### 2.1 Neural Implied-Volatility Smoothing
 
@@ -257,7 +269,7 @@ The current IV inversion uses a zero-rate, zero-dividend proxy. This is
 acceptable for the present benchmark target but is not sufficient for strict
 pricing or no-arbitrage claims. The manuscript must state this limitation.
 
-### 3.3 Feature Engineering
+### 3.3 Pretreatment Outputs, Feature Engineering, And Leakage Controls
 
 Each node represents one option token. Candidate model features are grouped as:
 
@@ -281,7 +293,17 @@ Masked query nodes must not carry same-day quote-derived fields:
 This masking rule is the main leakage-control contract. It should be reported as
 a benchmark condition, not an implementation detail.
 
-### 3.4 Graph Construction
+The pretreatment outputs used by the benchmark are:
+
+- standardized option-token identities;
+- same-date underlying close joined to each option row;
+- midpoint, spread, and liquidity proxies;
+- inferred IV when available under the current zero-rate, zero-dividend
+  assumption;
+- tenor, log moneyness, surface ID, and quality flags;
+- graph-cache keys for reproducible surface construction.
+
+### 3.4 Method: Graph Construction
 
 Each usable `(underlying, observation_date)` surface becomes one graph. Nodes
 are option contracts. Edge families include:
@@ -319,7 +341,7 @@ The masking regimes are:
   less liquid regions;
 - `block_wing`: structured wing/block masking.
 
-### 3.6 Models And Baselines
+### 3.6 Method: Models And Baselines
 
 Model families to report as LoG-IV candidates or ablations:
 

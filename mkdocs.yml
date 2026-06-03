@@ -61,8 +61,8 @@ extra:
 copyright: Copyright © 2026 LoG-IV
 nav:
   - Home: index.md
-  - Results Snapshot: results_snapshot.md
-  - Research Plan: paper_plan.md
+  - Results And Discussion: results_snapshot.md
+  - Paper Plan: paper_plan.md
   - Data: data.md
   - Benchmark Protocol: benchmark_protocol.md
   - Synthetic Benchmark: synthetic_benchmark.md

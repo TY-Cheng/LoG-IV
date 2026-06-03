@@ -8,7 +8,7 @@ baseline scope, leakage controls, regularizer semantics, and evidence gates.
 The main benchmark entrypoint is:
 
 ```bash
-just benchmark-a1 stratified
+just benchmark-a1 mask=stratified
 ```
 
 The default protocol uses:
