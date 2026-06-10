@@ -8,6 +8,14 @@ aligned with `origin/main`, the git worktree was clean before this memory
 refresh, data/reports/artifact state still matches the 2026-05-11 readiness
 assessment, and `log_iv.cli status` passed under CPython 3.13.13.
 
+Rechecked again on 2026-06-10 with the academic-research-suite review lens.
+Current docs satisfy the requested paper-facing structure: `docs/paper_plan.md`
+acts as the manuscript skeleton, and `docs/results_snapshot.md` acts as the live
+Results And Discussion chapter with outcomes, pending tables/figures, and
+interpretations. Evidence readiness remains unchanged: data gates pass, but
+accepted final benchmark artifacts, full SVI accounting, OOD analysis,
+reliability/bucket tables, and manuscript-ready figures are still pending.
+
 ## Local Execution Status
 
 - Project is activated in Serena as `LoG-IV`.
@@ -41,13 +49,16 @@ assessment, and `log_iv.cli status` passed under CPython 3.13.13.
   this memory refresh.
 - `.serena/` memories and project config are tracked; `.serena/project.local.yml`
   and `.serena/cache/` remain locally ignored.
-- `docs/paper_plan.md` is a paper-style plan with Introduction, Literature
-  Review, Materials and Methods including a preprocessing Mermaid chart,
-  Expected Experiments, Results Reporting Plan, Discussion Plan, Reviewer Risks,
-  Immediate Execution, and Venue Positioning.
-- `docs/results_snapshot.md` is the Results and Discussion snapshot, but it
-  still records an A1 stratified result under `reports/runs/a1-str/`; that
-  artifact directory is currently missing locally.
+- `docs/paper_plan.md` is a paper-style manuscript skeleton with Introduction,
+  Detailed Literature Review, Materials and Methods including a preprocessing
+  Mermaid chart, Expected Experiments, Results Reporting Plan, Discussion Plan,
+  Reviewer Risk Register, Immediate Execution Plan, and Venue Positioning.
+- `docs/results_snapshot.md` is the live Results And Discussion chapter. It
+  records data results, A1 stratified results, model-screen outcomes,
+  hard-mask confirmation status, pending SVI/OOD/reliability sections,
+  tables/figure register, and overall interpretation. It still records an A1
+  stratified result under `reports/runs/a1-str/`; that artifact directory is
+  currently missing locally.
 
 ## Research Question and Scope
 

@@ -84,11 +84,16 @@ replacement for real U.S. benchmark evidence.
 
 ## Current Evidence State
 
-- `docs/results_snapshot.md` is now the Results and Discussion snapshot; it
-  still records that local artifact `reports/runs/a1-str/` is missing.
-- `docs/paper_plan.md` is the paper-style research plan with Introduction,
-  Literature Review, Materials and Methods, Expected Experiments, Results
-  Reporting Plan, Discussion Plan, and Venue Positioning.
+- `docs/results_snapshot.md` is now the live Results And Discussion chapter; it
+  records current data gates, planned-experiment status, all current experiment
+  outcomes, tables/figure register, interpretations, missing evidence, and the
+  fact that local artifact `reports/runs/a1-str/` is missing.
+- `docs/paper_plan.md` is the paper-style manuscript skeleton with Introduction
+  (motivation, literature positioning/existing results, research gap, research
+  question, contributions, claim boundary), Detailed Literature Review,
+  Materials and Methods, Expected Experiments, Results Reporting Plan,
+  Discussion Plan, Reviewer Risk Register, Immediate Execution Plan, and Venue
+  Positioning.
 - Legacy/preliminary run directories were archived under
   `reports/archive/20260511-legacy/`.
 - The only current non-archived run family is the incomplete
