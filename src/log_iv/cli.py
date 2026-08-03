@@ -158,12 +158,12 @@ def _cmd_toy_graph(args: argparse.Namespace) -> None:
     from log_iv.schema import OptionQuote
 
     # Minimal quotes — use the actual pydantic model field names
-    today = date.today()
+    observation_date = date(2026, 1, 15)
     quotes = [
         OptionQuote(
             market="US",
             underlying="TEST",
-            observation_date=today,
+            observation_date=observation_date,
             expiry=date(2026, 6, 15),
             strike=95.0,
             option_type="C",
@@ -178,7 +178,7 @@ def _cmd_toy_graph(args: argparse.Namespace) -> None:
         OptionQuote(
             market="US",
             underlying="TEST",
-            observation_date=today,
+            observation_date=observation_date,
             expiry=date(2026, 6, 15),
             strike=100.0,
             option_type="C",
@@ -193,7 +193,7 @@ def _cmd_toy_graph(args: argparse.Namespace) -> None:
         OptionQuote(
             market="US",
             underlying="TEST",
-            observation_date=today,
+            observation_date=observation_date,
             expiry=date(2026, 9, 15),
             strike=100.0,
             option_type="C",
